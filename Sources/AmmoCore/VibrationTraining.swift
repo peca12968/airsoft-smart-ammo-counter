@@ -470,10 +470,12 @@ public struct RefinedAcousticModel:Codable,Sendable {
     public let prototypes:[DenseAudioDescriptor]
     public let prototypeGroups:[Int]?
     public var negatives:[DenseAudioDescriptor]
+    public var adaptiveNegatives:[DenseAudioDescriptor]?
     public var minimumScore:Double
     public let minimumRise:Double
-    public init(version:Int,base:AudioProfile,noisePower:[Double],prototypes:[DenseAudioDescriptor],negatives:[DenseAudioDescriptor],minimumScore:Double,minimumRise:Double,prototypeGroups:[Int]?=nil){self.version=version;self.base=base;self.noisePower=noisePower;self.prototypes=prototypes;self.negatives=negatives;self.minimumScore=minimumScore;self.minimumRise=minimumRise;self.prototypeGroups=prototypeGroups}
-    public var valid:Bool {version==2 && (try? AudioProfile(data:base.data)) != nil && noisePower.count==24 && noisePower.allSatisfy{$0.isFinite && (0...1).contains($0)} && (3...24).contains(prototypes.count) && prototypes.allSatisfy(\.valid) && (prototypeGroups == nil || (prototypeGroups!.count==prototypes.count && prototypeGroups!.allSatisfy{(0...23).contains($0)})) && negatives.count<=12 && negatives.allSatisfy(\.valid) && minimumScore.isFinite && (0.65...0.99).contains(minimumScore) && minimumRise.isFinite && (1.1...4).contains(minimumRise)}
+    public init(version:Int,base:AudioProfile,noisePower:[Double],prototypes:[DenseAudioDescriptor],negatives:[DenseAudioDescriptor],minimumScore:Double,minimumRise:Double,prototypeGroups:[Int]?=nil,adaptiveNegatives:[DenseAudioDescriptor]?=nil){self.version=version;self.base=base;self.noisePower=noisePower;self.prototypes=prototypes;self.negatives=negatives;self.minimumScore=minimumScore;self.minimumRise=minimumRise;self.prototypeGroups=prototypeGroups;self.adaptiveNegatives=adaptiveNegatives}
+    public var allBackground:[DenseAudioDescriptor] {negatives+(adaptiveNegatives ?? [])}
+    public var valid:Bool {version==2 && (try? AudioProfile(data:base.data)) != nil && noisePower.count==24 && noisePower.allSatisfy{$0.isFinite && (0...1).contains($0)} && (3...24).contains(prototypes.count) && prototypes.allSatisfy(\.valid) && (prototypeGroups == nil || (prototypeGroups!.count==prototypes.count && prototypeGroups!.allSatisfy{(0...23).contains($0)})) && negatives.count<=12 && negatives.allSatisfy(\.valid) && (adaptiveNegatives ?? []).count<=8 && (adaptiveNegatives ?? []).allSatisfy(\.valid) && minimumScore.isFinite && (0.65...0.99).contains(minimumScore) && minimumRise.isFinite && (1.1...4).contains(minimumRise)}
     public func cleaned(_ frame:AudioSpectrum)->DenseAudioDescriptor? {
         guard frame.usable,let d=frame.dense,d.valid else{return nil}
         let power=frame.rms*frame.rms
@@ -491,7 +493,7 @@ public struct RefinedAcousticModel:Codable,Sendable {
     }
     public func scores(_ frame:AudioSpectrum)->(target:Double,background:Double) {
         guard let d=cleaned(frame) else{return (0,0)}
-        return (prototypes.map{Self.score(d,$0)}.max() ?? 0,negatives.map{Self.score(d,$0)}.max() ?? 0)
+        return (prototypes.map{Self.score(d,$0)}.max() ?? 0,allBackground.map{Self.score(d,$0)}.max() ?? 0)
     }
     public func supportsAcrossEvents(_ frame:AudioSpectrum)->Bool {
         guard prototypeGroups == nil || prototypeGroups?.count==prototypes.count,let d=cleaned(frame) else{return false}
@@ -516,6 +518,46 @@ public struct RefinedAcousticModel:Codable,Sendable {
             if added>=8 {break}
         }
         guard added>0 else{throw RefinedTrainingFailure.indistinguishableBackground};return result
+    }
+    public func addingAdaptiveBackground(_ descriptor:DenseAudioDescriptor)->Self? {
+        guard valid,descriptor.valid else{return nil}
+        // Keep automatic additions far from every anchored positive, in both
+        // scoring directions, and never evict explicitly labelled backgrounds.
+        guard prototypes.allSatisfy({Self.score(descriptor,$0)<minimumScore-0.12 && Self.score($0,descriptor)<0.85}),
+              !allBackground.contains(where:{Self.score(descriptor,$0)>0.96}) else{return nil}
+        var next=self,bank=adaptiveNegatives ?? []
+        bank.append(descriptor);if bank.count>8 {bank.removeFirst()}
+        next.adaptiveNegatives=bank;return next
+    }
+    public func removingAdaptiveBackground()->Self {var next=self;next.adaptiveNegatives=[];return next}
+}
+
+/// Learn only sustained, confidently unrelated background. Positives, noise
+/// calibration, thresholds and explicitly labelled negatives remain unchanged.
+public struct AdaptiveBackgroundLearner {
+    private var modelID:UInt32?
+    private var previousTime:Double?
+    private var eligibleSince:Double?
+    private var holdUntil:Double = -.infinity
+    private var lastAddition:Double = -.infinity
+    private var lastInspected:Double = -.infinity
+    public init(){}
+    public mutating func observe(_ frame:AudioSpectrum,time:Double,decision:AcousticDecision,model:RefinedAcousticModel)->RefinedAcousticModel? {
+        guard time.isFinite else{eligibleSince=nil;return nil}
+        if modelID != model.base.id {self=Self();modelID=model.base.id}
+        if let previousTime,time<previousTime || time-previousTime>0.15 {eligibleSince=nil;holdUntil=time+1}
+        previousTime=time
+        if decision == .accepted || decision == .confirming || decision == .cooldown {
+            eligibleSince=nil;holdUntil=time+1;return nil
+        }
+        guard time-lastInspected>=0.1 else{return nil};lastInspected=time
+        guard model.valid else{eligibleSince=nil;return nil}
+        let target=model.scores(frame).target
+        if target>=model.minimumScore-0.12 {eligibleSince=nil;holdUntil=time+1;return nil}
+        guard frame.usable,frame.dense?.valid==true,frame.rms>=model.base.rearm,frame.rms<0.25,time>=holdUntil else{eligibleSince=nil;return nil}
+        if eligibleSince==nil {eligibleSince=time}
+        guard time-(eligibleSince ?? time)>=0.5,time-lastAddition>=15,let d=model.cleaned(frame),let next=model.addingAdaptiveBackground(d) else{return nil}
+        lastAddition=time;eligibleSince=nil;return next
     }
 }
 public struct RefinedAcousticReport:Codable,Sendable {
@@ -628,7 +670,7 @@ public struct RefinedEventDetector {
         guard time-(candidateAt ?? time)<=0.10,(attack>=model.minimumRise || spectralAttack) else{decision = .weakAttack;return false}
         guard match.target>=model.minimumScore else{support=0;decision = .differentSpectrum;return false}
         guard model.supportsAcrossEvents(frame) else{support=0;decision = .differentSpectrum;return false}
-        guard model.negatives.isEmpty || match.target>match.background+0.025 else{support=0;decision = .background;return false}
+        guard model.allBackground.isEmpty || match.target>match.background+0.025 else{support=0;decision = .background;return false}
         support+=1
         guard match.target>=min(0.98,model.minimumScore+0.035) || support>=2 else{decision = .confirming;return false}
         if needsMotion && !motionOK {pendingMotion=time;pendingPeak=frame.rms;decision = .confirming;return false}

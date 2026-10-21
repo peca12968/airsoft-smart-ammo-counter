@@ -315,6 +315,7 @@ private struct VibrationLiveWaveform: View {
 private struct SignalWaveform: View {
     let values: [Double]
     let color: Color
+    var height:CGFloat=100
     var body: some View {
         Canvas { context,size in
             var grid = Path();grid.move(to:CGPoint(x:0,y:size.height/2));grid.addLine(to:CGPoint(x:size.width,y:size.height/2))
@@ -328,84 +329,115 @@ private struct SignalWaveform: View {
                 if index==0 {path.move(to:CGPoint(x:x,y:y))}else{path.addLine(to:CGPoint(x:x,y:y))}
             }
             context.stroke(path,with:.color(color),style:StrokeStyle(lineWidth:2,lineJoin:.round))
-        }.frame(height:100).accessibilityLabel("即時訊號強度曲線")
+        }.frame(height:height).accessibilityLabel("即時訊號強度曲線")
     }
+}
+
+private enum PhoneReleaseInfo {
+    // Fixed for this build; this is not the time at which the app was opened.
+    static let updatedAt = "2026/10/21 17:47（台灣時間）"
+    static let name = "背景學習試用版"
 }
 
 struct LocalPhoneRootView:View {
     @EnvironmentObject var store:LocalAmmoStore
-    @State private var resetPrompt=false
-    @State private var capacityText="300"
+    private var primaryTitle:String {
+        if store.training || store.validating {return "停止"}
+        if store.refinedReport == nil {return "收錄主特徵"}
+        return store.armed ? "暫停":"開始"
+    }
     var body:some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing:22) {
-                    Label("iPhone 本機感測",systemImage:"iphone.radiowaves.left.and.right").foregroundStyle(.mint)
+                VStack(spacing:20) {
                     Text("\(store.remaining)").font(.system(size:108,weight:.semibold,design:.rounded)).monospacedDigit()
                     Text("/ \(store.ledger.capacity) · \(store.remaining*100/store.ledger.capacity)% · 估計剩餘 BB").foregroundStyle(.secondary)
                     ProgressView(value:Double(store.remaining),total:Double(store.ledger.capacity)).tint(store.remaining*100<store.ledger.capacity*15 ? .orange:.mint)
                     Text("累計擊發（估計） \(store.total)").font(.title2.bold()).monospacedDigit()
                     Text(store.phase).font(.headline).foregroundStyle(store.armed ? .mint:.orange)
-                    Text(store.decisionText).font(.caption).foregroundStyle(.secondary)
-                    if store.refinedReport != nil {Text("精細頻譜符合程度 \(Int(store.matchScore*100))%").font(.caption)}
                     Text(store.detail).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     HStack {
-                        Button(store.listening ? "停止感測":"開始監聽") {if store.listening {store.stop()}else{Task{await store.start()}}}.buttonStyle(.bordered)
-                        Button(store.armed ? "暫停計數":"啟用計數") {store.toggleArmed()}.buttonStyle(.borderedProminent).disabled(!store.listening || store.training || store.validating)
+                        Button(primaryTitle) {
+                            if store.training || store.validating {store.stop()}
+                            else if store.refinedReport == nil {store.train(includeSpeech:true)}
+                            else {Task{await store.toggleCounting()}}
+                        }.buttonStyle(.borderedProminent)
+                        if store.refinedReport != nil {
+                            Button("收錄主特徵"){store.train(includeSpeech:true)}.buttonStyle(.bordered).disabled(store.training || store.validating)
+                        }
                     }.controlSize(.large)
-                    Button(store.training ? "收錄中…":"收錄聲音與震動特徵") {store.train()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
-                    if let model=store.refinedReport {
-                        Button(store.validating && store.validationExpected==5 ? "驗證已收到 \(store.validationHits)／5 次":"試敲 5 次（不計入累計）") {store.validateFiveTaps()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
-                        Button("排除講話聲（3 秒）") {store.collectBackgroundExamples(speech:true)}.buttonStyle(.bordered).disabled(store.training || store.validating)
-                        Button(store.validating && store.validationExpected==0 ? "講話誤觸 \(store.validationHits) 次":"試講話 5 秒（不計入累計）") {store.validateSpeech()}.buttonStyle(.bordered).disabled(store.training || store.validating)
-                        if let url=store.validationURL {ShareLink("匯出驗證特徵紀錄",item:url)}
-                        Text("24 頻帶 · \(model.events) 個敲擊範本 · \(model.model.negatives.count) 個背景範本").font(.caption).foregroundStyle(.secondary)
-                        Button("補收誤觸／背景聲音") {store.collectBackgroundExamples()}.buttonStyle(.bordered).disabled(store.training || store.validating)
-                    } else {Text("重新收錄一次，可啟用精細特徵比對。").font(.caption).foregroundStyle(.orange)}
-                    Picker("觸發條件",selection:$store.triggerMode) {
-                        Text("聲音頻譜").tag(0);Text("聲音＋震動").tag(1);Text("震動").tag(2)
-                    }.pickerStyle(.segmented).disabled(store.training || store.validating)
-                    if store.triggerMode != 2 {
-                        VStack(alignment:.leading) {
-                            Text("頻譜相似度 \(Int(store.similarity*100))% · 越高越嚴格")
-                            Slider(value:$store.similarity,in:0.65...0.98,step:0.01).disabled(store.training || store.validating)
-                        }
-                    }
-                    if store.triggerMode != 0 {
-                        VStack(alignment:.leading) {
-                            Text("震動門檻 \(String(format:"%.3fg",store.motionThreshold))")
-                            Slider(value:$store.motionThreshold,in:0.003...0.2,step:0.001).disabled(store.training || store.validating)
-                        }
-                    }
-                    VStack(alignment:.leading,spacing:10) {
-                        Text("聲音強度與震動").font(.headline)
-                        SignalWaveform(values:store.spectrumWave,color:.cyan)
-                        SignalWaveform(values:store.motionWave,color:.mint)
-                        Text("主峰 \(store.spectrum?.dominantHz ?? 0) Hz · 動作 \(String(format:"%.3fg",store.motionG))")
-                        if let s=store.spectrum {
-                            HStack(alignment:.bottom,spacing:4) {ForEach(0..<8,id:\.self){i in
-                                VStack {Rectangle().fill(.cyan).frame(height:max(2,s.bands[i]*140));Text(AudioSpectrum.bandLabels[i]).font(.system(size:8))}.frame(maxWidth:.infinity)
-                            }}.frame(height:100,alignment:.bottom)
-                            if store.refinedReport == nil,let model=store.report?.profile {Text("舊範本相似度 \(Int(model.similarity(s)*100))%").font(.caption)}
-                        }
+                    Button("重新裝填"){store.reload()}.buttonStyle(.bordered).controlSize(.large)
+                    Label(store.adaptiveStatus,systemImage:"waveform.path").font(.footnote).foregroundStyle(.secondary)
+                    VStack(alignment:.leading,spacing:6) {
+                        Text("聲音與震動").font(.caption).foregroundStyle(.secondary)
+                        SignalWaveform(values:store.spectrumWave,color:.cyan,height:70)
+                        SignalWaveform(values:store.motionWave,color:.mint,height:70)
                     }.padding().background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:18))
-                    HStack {
-                        Button("重新裝填") {store.reload()}
-                        Button("−1") {store.correct(-1)};Button("＋1") {store.correct(1)}
-                    }.buttonStyle(.bordered).controlSize(.large)
-                    Menu("容量 \(store.ledger.capacity)") {ForEach(AmmoCounter.presets,id:\.self){n in Button("\(n) 發"){store.setCapacity(n)}}}
-                    HStack {
-                        TextField("自訂容量 1–9999",text:$capacityText).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
-                        Button("套用") {if let value=Int(capacityText),(1...9999).contains(value){store.setCapacity(value)}}
-                    }
-                    Button("手動記一發") {store.demoShot()}.buttonStyle(.bordered).disabled(store.training || store.validating)
-                    Button("重置累計擊發",role:.destructive) {resetPrompt=true}.buttonStyle(.bordered)
-                    Text(store.paired ? "手錶同步已連線":"手錶未即時連線；計數已保存本機").font(.footnote).foregroundStyle(.secondary)
-                    Text("一次只在其中一台啟用感測。App 保持前景時分析；原始錄音不存檔。數量是推估值，相似聲音可能誤判。").font(.footnote).foregroundStyle(.secondary)
+                    Text(store.paired ? "手錶已連線":"計數已保存本機").font(.footnote).foregroundStyle(.secondary)
+                    Text("保持 App 在前景；主特徵固定，僅保守學習背景。數量是推估值。").font(.caption).foregroundStyle(.secondary)
+                    VStack(spacing:4) {
+                        Text("版本 \(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "—") · \(PhoneReleaseInfo.name)")
+                        Text("更新時間：\(PhoneReleaseInfo.updatedAt)")
+                    }.font(.caption2).foregroundStyle(.secondary).padding(.top,8).accessibilityElement(children:.combine)
                 }.padding(24).frame(maxWidth:620).frame(maxWidth:.infinity)
-            }.background(.black).navigationTitle("Ammo · 本機辨識")
+            }.background(.black).navigationTitle("Ammo")
+                .toolbar {ToolbarItem(placement:.topBarTrailing){NavigationLink{LocalPhoneSettingsView()}label:{Label("更多",systemImage:"ellipsis.circle")}}}
         }.preferredColorScheme(.dark).tint(.mint)
-        .confirmationDialog("確定重置累計擊發？",isPresented:$resetPrompt,titleVisibility:.visible){Button("確認重置為 0",role:.destructive){store.resetTotal()}}
         .alert("提示",isPresented:Binding(get:{store.message != nil},set:{if !$0 {store.message=nil}})){Button("好"){store.message=nil}}message:{Text(store.message ?? "")}
+    }
+}
+
+struct LocalPhoneSettingsView:View {
+    @EnvironmentObject var store:LocalAmmoStore
+    @State private var resetPrompt=false
+    @State private var capacityText="300"
+    var body:some View {
+        Form {
+            Section("背景學習") {
+                Toggle("自動學習背景",isOn:$store.adaptiveEnabled)
+                Text("主特徵、手動排除樣本與門檻保持固定；不確定的聲音不自動學習，不保存原始錄音。").font(.footnote).foregroundStyle(.secondary)
+                Button("清除自動學習並暫停"){store.resetAdaptiveBackground()}.disabled(store.training || store.validating)
+                Button("補收講話聲（3 秒）"){store.collectBackgroundExamples(speech:true)}.disabled(store.training || store.validating)
+                Button("補收其他背景（3 秒）"){store.collectBackgroundExamples()}.disabled(store.training || store.validating)
+            }
+            Section("驗證，不計入累計") {
+                Button(store.validating && store.validationExpected==0 ? "講話誤觸 \(store.validationHits) 次":"試講話 5 秒"){store.validateSpeech()}.disabled(store.training || store.validating)
+                Button(store.validating && store.validationExpected==5 ? "收到 \(store.validationHits)／5 次":"試敲 5 次"){store.validateFiveTaps()}.disabled(store.training || store.validating)
+                Text(store.phase).font(.footnote)
+                if let url=store.validationURL {ShareLink("匯出驗證特徵",item:url)}
+            }
+            Section("彈匣與手動校正") {
+                Menu("容量 \(store.ledger.capacity)"){ForEach(AmmoCounter.presets,id:\.self){n in Button("\(n) 發"){store.setCapacity(n)}}}
+                HStack {
+                    TextField("自訂容量 1–9999",text:$capacityText).keyboardType(.numberPad)
+                    Button("套用"){if let n=Int(capacityText),(1...9999).contains(n){store.setCapacity(n)}}
+                }
+                HStack {
+                    Text("估計剩餘 \(store.remaining)");Spacer()
+                    Button("−1"){store.correct(-1)};Button("＋1"){store.correct(1)}
+                }.buttonStyle(.bordered)
+                Button("手動記一發"){store.demoShot()}.disabled(store.training || store.validating)
+                Button("重置累計擊發",role:.destructive){resetPrompt=true}
+            }
+            Section("進階辨識") {
+                Picker("觸發條件",selection:$store.triggerMode){Text("聲音頻譜").tag(0);Text("聲音＋震動").tag(1);Text("震動").tag(2)}
+                Text("頻譜相似度 \(Int(store.similarity*100))%")
+                Slider(value:$store.similarity,in:0.65...0.98,step:0.01)
+                Text("震動門檻 \(String(format:"%.3fg",store.motionThreshold))")
+                Slider(value:$store.motionThreshold,in:0.003...0.2,step:0.001)
+            }.disabled(store.training || store.validating)
+            Section("訊號與裝置") {
+                Button(store.listening ? "停止感測":"僅開啟監聽"){if store.listening{store.stop()}else{Task{await store.start()}}}
+                Text(store.decisionText)
+                Text("頻譜符合程度 \(Int(store.matchScore*100))% · 主峰 \(store.spectrum?.dominantHz ?? 0) Hz")
+                if let model=store.refinedReport {Text("\(model.events) 個敲擊範本 · \(model.model.negatives.count) 個手動背景 · \(model.model.adaptiveNegatives?.count ?? 0) 個自動背景")}
+                if let s=store.spectrum {
+                    HStack(alignment:.bottom,spacing:4){ForEach(0..<8,id:\.self){i in VStack{Rectangle().fill(.cyan).frame(height:max(2,s.bands[i]*100));Text(AudioSpectrum.bandLabels[i]).font(.system(size:8))}.frame(maxWidth:.infinity)}}.frame(height:100,alignment:.bottom)
+                }
+                Text(store.paired ? "手錶即時連線中":"手錶未即時連線；資料已保存本機")
+                Text("一次只在一台啟用感測；相似聲音仍可能誤判，驗證不等於真實擊發準確率。").font(.footnote).foregroundStyle(.secondary)
+            }
+        }.navigationTitle("更多")
+        .confirmationDialog("確定重置累計擊發？",isPresented:$resetPrompt,titleVisibility:.visible){Button("確認重置為 0",role:.destructive){store.resetTotal()}}
     }
 }

@@ -754,6 +754,10 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     var profile:AudioProfile?
     var refined:RefinedAcousticModel?
     var onDecision:((String,Double)->Void)?
+    var onAdaptiveModel:((RefinedAcousticModel,Int)->Void)?
+    var adaptiveEnabled=false
+    var adaptiveGeneration=0
+    var adaptiveLearner=AdaptiveBackgroundLearner()
     private var refinedDetector=LocalAcousticDetector()
     var triggerMode=0 // 0=spectrum, 1=spectrum+motion, 2=motion
     var motionThreshold=0.015
@@ -807,6 +811,9 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if let model=refined {
             let hit=refinedDetector.update(spectrum,time:now,model:model,needsMotion:triggerMode==1,motionOK:movement>=motionThreshold)
             onDecision?(refinedDetector.decision.text,refinedDetector.score)
+            if adaptiveEnabled,let updated=adaptiveLearner.observe(spectrum,time:now,decision:refinedDetector.decision,model:model) {
+                refined=updated;onAdaptiveModel?(updated,adaptiveGeneration)
+            }
             if hit {onShot?()};return
         }
         let match=profile.accepts(spectrum) && (triggerMode==0 || movement>=motionThreshold)
@@ -841,6 +848,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     @Published var triggerMode=0 {didSet {applyProcessor()}}
     @Published var motionThreshold=0.015 {didSet {applyProcessor()}}
     @Published var similarity=0.85 {didSet {applyProcessor()}}
+    @Published var adaptiveEnabled=true {didSet {UserDefaults.standard.set(adaptiveEnabled,forKey:"adaptive-background-enabled");adaptiveGeneration+=1;applyProcessor()}}
     @Published var message:String?
     private let origin:String
     private let folder:URL
@@ -856,11 +864,17 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     private var session:WCSession?
     private var observation:NSObjectProtocol?
     private var sinkNode:AVAudioSinkNode?
+    private var adaptiveGeneration=0
     private var refinedURL:URL {folder.appendingPathComponent("local-acoustic-v2.json")}
     private var modelURL:URL {folder.appendingPathComponent("local-audio-model.json")}
     private var ledgerURL:URL {folder.appendingPathComponent("local-counter.json")}
     var remaining:Int {ledger.remaining}
     var total:UInt64 {ledger.total}
+    var adaptiveStatus:String {
+        guard adaptiveEnabled else{return "自動背景學習已暫停"}
+        let count=refinedReport?.model.adaptiveNegatives?.count ?? 0
+        return armed && !training && !validating ? "背景學習中 · \(count) 種已保存":"開始後自動學習背景 · 主特徵固定"
+    }
     override init(){
         folder=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("AirsoftAmmo")
         if let saved=UserDefaults.standard.string(forKey:"local-origin") {origin=saved}else{origin=UUID().uuidString;UserDefaults.standard.set(origin,forKey:"local-origin")}
@@ -875,6 +889,11 @@ private final class LocalAudioProcessor: @unchecked Sendable {
             migrated.resetBaseline=UInt64(old?.resetStatus?.baseline ?? 0);ledger=migrated
         }
         super.init()
+        #if os(iOS)
+        if UserDefaults.standard.object(forKey:"adaptive-background-enabled") != nil {adaptiveEnabled=UserDefaults.standard.bool(forKey:"adaptive-background-enabled")}
+        #else
+        adaptiveEnabled=false
+        #endif
         #if DEBUG
         let arguments=ProcessInfo.processInfo.arguments
         if let index=arguments.firstIndex(of:"--legacy-lifetime-floor"),arguments.indices.contains(index+1),let value=UInt64(arguments[index+1]),ledger.resetRevision==0 {ledger.seed=max(ledger.seed,value)}
@@ -888,15 +907,22 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         }}
         processor.onFrame={[weak self] frame,peak,block,count in Task{@MainActor in self?.accept(frame,peak:peak,block:block,motionCount:count)}}
         processor.onShot={[weak self] in Task{@MainActor in self?.shot()}}
+        processor.onAdaptiveModel={[weak self] model,generation in Task{@MainActor in
+            guard let self,self.listening,self.armed,self.adaptiveEnabled,!self.training,!self.validating,generation==self.adaptiveGeneration,
+                  let current=self.refinedReport,current.model.base.id==model.base.id else{return}
+            self.refinedReport=RefinedAcousticReport(model:model,events:current.events,excludedEvents:current.excludedEvents,crossEventSimilarity:current.crossEventSimilarity,backgroundRMS:current.backgroundRMS)
+            do {try self.saveRefinedReport()}catch{self.adaptiveEnabled=false;self.message="背景學習保存失敗，已暫停學習；累計仍保留。"}
+        }}
         motionQueue.maxConcurrentOperationCount=1
         if WCSession.isSupported(){let wc=WCSession.default;session=wc;wc.delegate=self;wc.activate()}
         observation=NotificationCenter.default.addObserver(forName:AVAudioSession.interruptionNotification,object:nil,queue:.main){[weak self] _ in Task{@MainActor in self?.stop();self?.detail="音訊被系統中斷，請再次開始監聽。"}}
         persist()
+        if refinedReport != nil {detail="主特徵已保留，按開始即可計數；背景會保守學習。"}
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--local-mic-smoke") {
             Task{@MainActor in
                 await self.start();try? await Task.sleep(nanoseconds:4_000_000_000)
-                let result:[String:Any] = ["build":"speech-filter-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
+                let result:[String:Any] = ["build":"adaptive-simple-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
                 if let data=try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),let text=String(data:data,encoding:.utf8){print("AMMO_LOCAL_MIC "+text);fflush(stdout)}
                 self.stop()
             }
@@ -936,12 +962,26 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         } catch {stop();message="無法啟動感測：\(error.localizedDescription)"}
     }
     func stop(){
+        adaptiveGeneration+=1
         task?.cancel();task=nil;training=false;validating=false;trainingPhase=0;armed=false;listening=false
         processor.queue.async{self.processor.armed=false}
         audioEngine.stop();if let sink=sinkNode {audioEngine.disconnectNodeInput(sink);audioEngine.detach(sink);sinkNode=nil}
         motion.stopDeviceMotionUpdates();try? AVAudioSession.sharedInstance().setActive(false,options:.notifyOthersOnDeactivation);phase="已停止"
     }
     func setActive(_ active:Bool){if !active {stop()}}
+    func toggleCounting() async {
+        guard !training,!validating else{return}
+        if armed {stop();return}
+        if !listening {await start()}
+        guard listening else{return};toggleArmed()
+    }
+    func resetAdaptiveBackground(){
+        guard !training,!validating,let current=refinedReport else{return}
+        adaptiveEnabled=false
+        adaptiveGeneration+=1
+        refinedReport=RefinedAcousticReport(model:current.model.removingAdaptiveBackground(),events:current.events,excludedEvents:current.excludedEvents,crossEventSimilarity:current.crossEventSimilarity,backgroundRMS:current.backgroundRMS)
+        do {try saveRefinedReport();applyProcessor();detail="自動學習已清除，主特徵、手動排除樣本與累計保留。"}catch{message="背景學習保存失敗，累計保留。"}
+    }
     func toggleArmed(){
         guard !validating,!training else{return}
         guard listening else{message="請先開始監聽。";return}
@@ -953,7 +993,12 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         let enabled=(armed || validating) && !training,mode=triggerMode,threshold=motionThreshold
         var refined=refinedReport?.model;refined?.minimumScore=similarity
         let selected=refined
-        processor.queue.async{self.processor.profile=profile;self.processor.refined=selected;self.processor.armed=enabled;self.processor.triggerMode=mode;self.processor.motionThreshold=threshold}
+        let learning=adaptiveEnabled && armed && !training && !validating && mode != 2,generation=adaptiveGeneration
+        processor.queue.async{
+            if self.processor.adaptiveGeneration != generation {self.processor.adaptiveLearner=AdaptiveBackgroundLearner()}
+            self.processor.adaptiveGeneration=generation;self.processor.adaptiveEnabled=learning
+            self.processor.profile=profile;self.processor.refined=selected;self.processor.armed=enabled;self.processor.triggerMode=mode;self.processor.motionThreshold=threshold
+        }
     }
     private func accept(_ frame:AudioSpectrum,peak:Double,block:Double,motionCount:Int){
         guard listening else{return}
@@ -962,8 +1007,9 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if trainingPhase==1 {quietFrames.append(frame)}else if trainingPhase==2 {targetFrames.append(frame);collectedMotion.append(peak)}
         if Date().timeIntervalSince(lastPaint)>0.06 {lastPaint=Date();spectrum=frame;motionG=peak;motionSamples=motionCount;spectrumWave=Array((spectrumWave+[frame.rms]).suffix(80));motionWave=Array((motionWave+[peak]).suffix(80))}
     }
-    func train(){
+    func train(includeSpeech:Bool=false){
         guard !training,!validating else{return}
+        adaptiveGeneration+=1
         task=Task{@MainActor in
             if !listening {await start()};guard listening else{return}
             training=true;armed=false;ledger.claimSensor(origin:origin);persist();sync();applyProcessor();quietFrames=[];targetFrames=[];collectedMotion=[]
@@ -977,7 +1023,16 @@ private final class LocalAudioProcessor: @unchecked Sendable {
                 try saveRefinedReport()
                 let peaks=collectedMotion.filter{$0>0.001}.sorted();if !peaks.isEmpty {motionThreshold=max(0.003,min(0.2,peaks[Int(Double(peaks.count-1)*0.9)]*0.5))}
                 try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true);try JSONEncoder().encode(result).write(to:modelURL,options:.atomic)
-                phase="精細特徵已保存";detail="已保留 \(result.events) 次敲擊範本，排除 \(improved.excludedEvents) 次離群樣本。先按「試敲 5 次」確認，再啟用計數。";training=false;applyProcessor()
+                var voiceAdded=false
+                if includeSpeech {
+                    targetFrames=[];trainingPhase=2;phase="正常講話 3 秒，不要敲擊";detail="正在收錄要排除的人聲；本次不增加累計。"
+                    try await Task.sleep(nanoseconds:3_000_000_000);guard !Task.isCancelled else{return};trainingPhase=0
+                    if let model=try? improved.model.addingBackground(targetFrames) {
+                        refinedReport=RefinedAcousticReport(model:model,events:improved.events,excludedEvents:improved.excludedEvents,crossEventSimilarity:improved.crossEventSimilarity,backgroundRMS:improved.backgroundRMS)
+                        try saveRefinedReport();voiceAdded=true
+                    }
+                }
+                phase="主特徵已保存";detail=includeSpeech && !voiceAdded ? "主特徵已保存；講話樣本未加入，可在更多補收。按開始即可計數。":"按開始即可計數，背景會保守學習；更多內可試講話與試敲。";training=false;applyProcessor()
             }catch{if Task.isCancelled {return};training=false;trainingPhase=0;phase="請重新收錄";detail=trainingErrorText(error);applyProcessor()}
         }
     }
@@ -1000,6 +1055,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     }
     func collectBackgroundExamples(speech:Bool=false){
         guard !training,!validating,refinedReport != nil else{message="請先收錄新版精細特徵。";return}
+        adaptiveGeneration+=1
         task=Task{@MainActor in
             if !listening {await start()};guard listening else{return}
             training=true;armed=false;ledger.claimSensor(origin:origin);persist();sync();applyProcessor();targetFrames=[];trainingPhase=2
@@ -1017,6 +1073,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     func validateSpeech(){validateSession(expected:0)}
     private func validateSession(expected:Int){
         guard !training,!validating,let modelID=refinedReport?.model.base.id else {message="請先收錄新版精細特徵。";return}
+        adaptiveGeneration+=1
         task=Task{@MainActor in
             if !listening {await start()};guard listening else{return}
             armed=false;validating=true;validationHits=0;validationExpected=expected;validationFrames=[];validationURL=nil
