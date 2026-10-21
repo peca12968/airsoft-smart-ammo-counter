@@ -335,13 +335,17 @@ private struct SignalWaveform: View {
 
 private enum PhoneReleaseInfo {
     // Fixed for this build; this is not the time at which the app was opened.
-    static let updatedAt = "2026/10/21 20:23（台灣時間）"
-    static let name = "雙端主特徵版"
+    static let updatedAt = LocalAmmoStore.buildLabel+"（台灣時間）"
+    static let name = "手錶收音・手機判斷版"
 }
 
 struct LocalPhoneRootView:View {
     @EnvironmentObject var store:LocalAmmoStore
     private var primaryTitle:String {
+        if store.inputSource==1 {
+            if store.watchPrimaryActive || store.watchControl?.busy==true {return "停止"}
+            return store.watchControl?.hasModel==false ? "收錄主特徵":"開始"
+        }
         if store.training || store.validating {return "停止"}
         if store.refinedReport == nil {return "收錄主特徵"}
         return store.armed ? "暫停":"開始"
@@ -354,27 +358,33 @@ struct LocalPhoneRootView:View {
                     Text("/ \(store.ledger.capacity) · \(store.remaining*100/store.ledger.capacity)% · 估計剩餘 BB").foregroundStyle(.secondary)
                     ProgressView(value:Double(store.remaining),total:Double(store.ledger.capacity)).tint(store.remaining*100<store.ledger.capacity*15 ? .orange:.mint)
                     Text("累計擊發（估計） \(store.total)").font(.title2.bold()).monospacedDigit()
+                    Text("收音來源：\(store.inputSourceName)").font(.footnote).foregroundStyle(.secondary)
                     Text(store.phase).font(.headline).foregroundStyle(store.armed ? .mint:.orange)
                     Text(store.detail).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     HStack {
                         Button(primaryTitle) {
-                            if store.training || store.validating {store.stop()}
+                            if store.inputSource==1 {
+                                if store.watchPrimaryActive || store.watchControl?.busy==true {store.controlWatch(.stop)}
+                                else if store.watchControl?.hasModel==false {store.controlWatch(.train)}
+                                else {store.controlWatch(.start)}
+                            }
+                            else if store.training || store.validating {store.stop()}
                             else if store.refinedReport == nil {store.train()}
                             else {Task{await store.toggleCounting()}}
                         }.buttonStyle(.borderedProminent)
-                        if store.refinedReport != nil {
-                            Button("收錄主特徵"){store.train()}.buttonStyle(.bordered).disabled(store.training || store.validating)
+                        if store.inputSource==1 || store.refinedReport != nil {
+                            Button("收錄主特徵"){store.train()}.buttonStyle(.bordered).disabled(store.selectedSourceBusy)
                         }
                     }.controlSize(.large)
                     Button("重新裝填"){store.reload()}.buttonStyle(.bordered).controlSize(.large)
                     Label(store.dualStatus,systemImage:"waveform.path").font(.footnote).foregroundStyle(.secondary)
                     VStack(alignment:.leading,spacing:6) {
-                        Text("聲音與震動").font(.caption).foregroundStyle(.secondary)
+                        Text("\(store.inputSourceName)聲音與震動").font(.caption).foregroundStyle(.secondary)
                         SignalWaveform(values:store.spectrumWave,color:.cyan,height:70)
                         SignalWaveform(values:store.motionWave,color:.mint,height:70)
                     }.padding().background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:18))
                     Text(store.paired ? "手錶已連線":"計數已保存本機").font(.footnote).foregroundStyle(.secondary)
-                    Text("保持 App 在前景；不會自動學習背景。數量是推估值。").font(.caption).foregroundStyle(.secondary)
+                    Text("預設手錶收音、手機判斷；更多可切換手機收音。手錶模式需兩端 App 在前景，數量為推估值。").font(.caption).foregroundStyle(.secondary)
                     VStack(spacing:4) {
                         Text("版本 \(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "—") · \(PhoneReleaseInfo.name)")
                         Text("更新時間：\(PhoneReleaseInfo.updatedAt)")
@@ -383,6 +393,12 @@ struct LocalPhoneRootView:View {
             }.background(.black).navigationTitle("Ammo")
                 .toolbar {ToolbarItem(placement:.topBarTrailing){NavigationLink{LocalPhoneSettingsView()}label:{Label("更多",systemImage:"ellipsis.circle")}}}
         }.preferredColorScheme(.dark).tint(.mint)
+        .task {
+            while !Task.isCancelled {
+                if store.inputSource==1 && !store.watchPrimaryActive {store.controlWatch(.status)}
+                do {try await Task.sleep(nanoseconds:2_000_000_000)}catch{return}
+            }
+        }
         .alert("提示",isPresented:Binding(get:{store.message != nil},set:{if !$0 {store.message=nil}})){Button("好"){store.message=nil}}message:{Text(store.message ?? "")}
     }
 }
@@ -393,14 +409,25 @@ struct LocalPhoneSettingsView:View {
     @State private var capacityText="300"
     var body:some View {
         Form {
+            Section("收音來源") {
+                Picker("麥克風",selection:Binding(get:{store.inputSource},set:{store.selectInputSource($0)})) {
+                    Text("手錶（預設）").tag(1)
+                    Text("手機").tag(0)
+                }.disabled(store.selectedSourceBusy || store.armed)
+                Text("開始、收錄及驗證都使用這裡選擇的來源；判斷與累計由手機處理。").font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("手錶") {
+                NavigationLink("手錶設定") { PhoneWatchSettingsView() }
+                Text("手錶只收音與顯示；所有操作都在手機。").font(.footnote).foregroundStyle(.secondary)
+            }
             Section("手動排除雜音") {
                 Text("依收錄的主特徵偵測；只有你按下補收才會新增排除範本。").font(.footnote).foregroundStyle(.secondary)
-                Button("補收講話聲（3 秒）"){store.collectBackgroundExamples(speech:true)}.disabled(store.training || store.validating)
-                Button("補收其他背景（3 秒）"){store.collectBackgroundExamples()}.disabled(store.training || store.validating)
+                Button("補收講話聲（3 秒）"){store.collectBackgroundExamples(speech:true)}.disabled(store.selectedSourceBusy)
+                Button("補收其他背景（3 秒）"){store.collectBackgroundExamples()}.disabled(store.selectedSourceBusy)
             }
             Section("驗證，不計入累計") {
-                Button(store.validating && store.validationExpected==0 ? "講話誤觸 \(store.validationHits) 次":"試講話 5 秒"){store.validateSpeech()}.disabled(store.training || store.validating)
-                Button(store.validating && store.validationExpected==5 ? "收到 \(store.validationHits)／5 次":"試敲 5 次"){store.validateFiveTaps()}.disabled(store.training || store.validating)
+                Button(store.validating && store.validationExpected==0 ? "講話誤觸 \(store.validationHits) 次":"試講話 5 秒"){store.validateSpeech()}.disabled(store.selectedSourceBusy)
+                Button(store.validating && store.validationExpected==5 ? "收到 \(store.validationHits)／5 次":"試敲 5 次"){store.validateFiveTaps()}.disabled(store.selectedSourceBusy)
                 Text(store.phase).font(.footnote)
                 if let url=store.validationURL {ShareLink("匯出驗證特徵",item:url)}
             }
@@ -414,30 +441,82 @@ struct LocalPhoneSettingsView:View {
                     Text("估計剩餘 \(store.remaining)");Spacer()
                     Button("−1"){store.correct(-1)};Button("＋1"){store.correct(1)}
                 }.buttonStyle(.bordered)
-                Button("手動記一發"){store.demoShot()}.disabled(store.training || store.validating)
+                Button("手動記一發"){store.demoShot()}.disabled(store.selectedSourceBusy)
                 Button("重置累計擊發",role:.destructive){resetPrompt=true}
             }
-            Section("進階辨識") {
+            if store.inputSource==0 {
+            Section("手機進階辨識") {
                 Picker("觸發條件",selection:$store.triggerMode){Text("聲音頻譜").tag(0);Text("聲音＋震動").tag(1);Text("震動").tag(2)}
                 Text("頻譜相似度 \(Int(store.similarity*100))%")
                 Slider(value:$store.similarity,in:0.65...0.98,step:0.01)
                 Text("震動門檻 \(String(format:"%.3fg",store.motionThreshold))")
                 Slider(value:$store.motionThreshold,in:0.003...0.2,step:0.001)
-            }.disabled(store.training || store.validating)
+            }.disabled(store.selectedSourceBusy)
+            }
             Section("訊號與裝置") {
-                Button(store.listening ? "停止感測":"僅開啟監聽"){if store.listening{store.stop()}else{Task{await store.start()}}}
+                if store.inputSource==0 {
+                    Button(store.listening ? "停止感測":"僅開啟監聽"){if store.listening{store.stop()}else{Task{await store.start()}}}
+                }
                 Text(store.decisionText)
                 Text("頻譜符合程度 \(Int(store.matchScore*100))% · 主峰 \(store.spectrum?.dominantHz ?? 0) Hz")
-                Text(store.relativeLevelText).font(.footnote)
+                if store.inputSource==0 {Text(store.relativeLevelText).font(.footnote)}
                 Text("裝置相對音量，非校正環境分貝；手機與手錶各自收錄，改變距離後應重做驗證。").font(.footnote).foregroundStyle(.secondary)
-                if let model=store.refinedReport {Text("\(model.events) 個敲擊範本 · \(model.model.negatives.count) 個手動背景")}
+                if store.inputSource==0,let model=store.refinedReport {Text("\(model.events) 個敲擊範本 · \(model.model.negatives.count) 個手動背景")}
                 if let s=store.spectrum {
                     HStack(alignment:.bottom,spacing:4){ForEach(0..<8,id:\.self){i in VStack{Rectangle().fill(.cyan).frame(height:max(2,s.bands[i]*100));Text(AudioSpectrum.bandLabels[i]).font(.system(size:8))}.frame(maxWidth:.infinity)}}.frame(height:100,alignment:.bottom)
                 }
                 Text(store.paired ? "手錶即時連線中":"手錶未即時連線；資料已保存本機")
-                Text("兩台各自收錄特徵並開始；手錶事件由手機統一配對入帳。相似聲音仍可能誤判。").font(.footnote).foregroundStyle(.secondary)
+                Text("兩台各自保留收音特徵；一次使用一個來源，手機統一判斷並回傳手錶。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("更多")
         .confirmationDialog("確定重置累計擊發？",isPresented:$resetPrompt,titleVisibility:.visible){Button("確認重置為 0",role:.destructive){store.resetTotal()}}
+    }
+}
+
+
+private struct PhoneWatchSettingsView:View {
+    @EnvironmentObject var store:LocalAmmoStore
+    @State private var draft=LocalDetectionSettings()
+    @State private var loaded=false
+    private var unavailable:Bool {store.watchControlPending || store.watchControl==nil || store.watchControl?.busy==true}
+    var body:some View {
+        Form {
+            Section("手錶狀態") {
+                Text(store.watchControlNote).font(.footnote)
+                if let status=store.watchControl {
+                    Text(status.phase)
+                    Text(status.detail).font(.footnote).foregroundStyle(.secondary)
+                }
+                Text("保持手錶 Ammo 雙端開啟。手機按收錄後，由手錶麥克風採集，請看手錶提示動作。").font(.footnote)
+            }
+            Section("手錶主特徵") {
+                Button("收錄手錶主特徵"){store.controlWatch(.train)}.disabled(unavailable)
+                Button("補收手錶講話聲"){store.controlWatch(.speechBackground)}.disabled(unavailable || store.watchControl?.hasModel != true)
+                Button("補收手錶其他背景"){store.controlWatch(.otherBackground)}.disabled(unavailable || store.watchControl?.hasModel != true)
+                Button("停止手錶感測"){store.controlWatch(.stop)}.disabled(store.watchControlPending || store.watchControl==nil)
+                Text("保留手錶原有特徵；只有按下收錄才更新。五次驗證請回手機更多操作，收音來源選手錶。").font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("手錶辨識設定") {
+                Picker("觸發條件",selection:$draft.mode){Text("聲音頻譜").tag(0);Text("聲音＋震動").tag(1);Text("震動").tag(2)}
+                Text("頻譜相似度 \(Int(draft.similarity*100))%")
+                Slider(value:$draft.similarity,in:0.65...0.98,step:0.01)
+                Text("震動門檻 \(String(format:"%.3fg",draft.motionThreshold))")
+                Slider(value:$draft.motionThreshold,in:0.003...0.2,step:0.001)
+                Button("套用到手錶"){store.controlWatch(.settings,settings:draft);loaded=false}
+            }.disabled(unavailable)
+            Section {
+                Text("容量、重新裝填、手動校正與累計重置，使用手機原有按鈕，連線時同步到手錶。手機辨識設定不會覆蓋手錶設定。").font(.footnote).foregroundStyle(.secondary)
+            }
+        }.navigationTitle("手錶設定")
+        .task {
+            while !Task.isCancelled {
+                store.controlWatch(.status)
+                do {try await Task.sleep(nanoseconds:2_000_000_000)}catch{return}
+            }
+        }
+        .onReceive(store.$watchControl) {status in
+            if status?.busy==true {loaded=false}
+            if !loaded,let status {draft=status.settings;loaded = !status.busy}
+        }
     }
 }
