@@ -487,5 +487,88 @@ extension VibrationTrainingTests {
         XCTAssertTrue(detector.confirmMotion(time:0.12,refractory:0.1))
         XCTAssertFalse(detector.confirmMotion(time:0.13,refractory:0.1))
     }
+
+    func testAdaptiveLearnerRequiresSustainedUnrelatedAudioAndPreservesAnchors() throws {
+        let model=try refinedFixture().model,background=refinedTone(5000,0.02)
+        var learner=AdaptiveBackgroundLearner(),learned:RefinedAcousticModel?
+        for index in 0..<80 {
+            let next=learner.observe(background,time:Double(index)*0.01,decision:.quiet,model:learned ?? model)
+            if index<50 {XCTAssertNil(next)}
+            if let next {learned=next}
+        }
+        let updated=try XCTUnwrap(learned)
+        XCTAssertEqual(updated.adaptiveNegatives?.count,1)
+        XCTAssertEqual(updated.prototypes,model.prototypes);XCTAssertEqual(updated.prototypeGroups,model.prototypeGroups)
+        XCTAssertEqual(updated.base,model.base);XCTAssertEqual(updated.noisePower,model.noisePower)
+        XCTAssertEqual(updated.minimumScore,model.minimumScore);XCTAssertEqual(updated.minimumRise,model.minimumRise)
+        XCTAssertEqual(updated.negatives,model.negatives)
+    }
+
+    func testAdaptiveLearnerNeverLabelsTargetOrNearbyEventAsBackground() throws {
+        let model=try refinedFixture().model,target=refinedTone(1250),background=refinedTone(5000)
+        var learner=AdaptiveBackgroundLearner()
+        for index in 0..<100 {XCTAssertNil(learner.observe(target,time:Double(index)*0.01,decision:.quiet,model:model))}
+        for index in 100..<200 {XCTAssertNil(learner.observe(background,time:Double(index)*0.01,decision:.quiet,model:model))}
+        XCTAssertNil(model.addingAdaptiveBackground(try XCTUnwrap(model.cleaned(target))))
+    }
+
+    func testAdaptiveLearningPausesAroundAcceptedEventsAndAudioGaps() throws {
+        let model=try refinedFixture().model,background=refinedTone(5000)
+        var learner=AdaptiveBackgroundLearner()
+        for index in 0..<40 {XCTAssertNil(learner.observe(background,time:Double(index)*0.01,decision:.quiet,model:model))}
+        XCTAssertNil(learner.observe(background,time:0.4,decision:.accepted,model:model))
+        for index in 41..<140 {XCTAssertNil(learner.observe(background,time:Double(index)*0.01,decision:.quiet,model:model))}
+        XCTAssertNil(learner.observe(background,time:3,decision:.quiet,model:model))
+        for index in 301..<450 {XCTAssertNil(learner.observe(background,time:Double(index)*0.01,decision:.quiet,model:model))}
+    }
+
+    func testAdaptiveBankIsBoundedKeepsManualNegativesAndCanBeRemoved() throws {
+        var model=try refinedFixture().model
+        var manual=refinedTone(1250);let d=try XCTUnwrap(manual.dense)
+        manual.dense=DenseAudioDescriptor(spectrum:d.spectrum.map{$0*0.92+0.08/24},centroid:d.centroid,flatness:d.flatness,zeroCrossing:d.zeroCrossing,crest:d.crest)
+        model=try model.addingBackground([manual]);let anchored=model
+        var accepted=0
+        for index in 0..<24 {
+            var spectrum=[Double](repeating:0,count:24);spectrum[index]=1
+            let descriptor=DenseAudioDescriptor(spectrum:spectrum,centroid:DenseAudioDescriptor.edges[index+1],flatness:0.03,zeroCrossing:0.05,crest:2)
+            if let next=model.addingAdaptiveBackground(descriptor){model=next;accepted+=1}
+        }
+        XCTAssertGreaterThan(accepted,8);XCTAssertEqual(model.adaptiveNegatives?.count,8)
+        XCTAssertEqual(model.negatives,anchored.negatives)
+        let restored=model.removingAdaptiveBackground()
+        XCTAssertTrue(restored.valid);XCTAssertTrue(restored.adaptiveNegatives?.isEmpty==true)
+        XCTAssertEqual(restored.prototypes,anchored.prototypes);XCTAssertEqual(restored.negatives,anchored.negatives)
+    }
+
+    func testAdaptiveModelsPersistAndOldJSONWithoutAdaptiveBankStillLoads() throws {
+        let model=try refinedFixture().model
+        let updated=try XCTUnwrap(model.addingAdaptiveBackground(try XCTUnwrap(model.cleaned(refinedTone(5000)))))
+        let restored=try JSONDecoder().decode(RefinedAcousticModel.self,from:JSONEncoder().encode(updated))
+        XCTAssertTrue(restored.valid);XCTAssertEqual(restored.adaptiveNegatives,updated.adaptiveNegatives)
+        var old=try XCTUnwrap(JSONSerialization.jsonObject(with:JSONEncoder().encode(model)) as? [String:Any])
+        old.removeValue(forKey:"adaptiveNegatives")
+        let legacy=try JSONDecoder().decode(RefinedAcousticModel.self,from:JSONSerialization.data(withJSONObject:old))
+        XCTAssertTrue(legacy.valid);XCTAssertNil(legacy.adaptiveNegatives)
+        var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:restored)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:restored)
+        XCTAssertFalse(detector.update(refinedTone(1250,0.006),time:0.08,model:restored))
+        XCTAssertTrue(detector.update(refinedTone(1250,0.002),time:0.10,model:restored))
+    }
+
+    func testAdaptiveLearningRateLimitAndCorruptDataDoNotPromoteSamples() throws {
+        var model=try refinedFixture().model;var learner=AdaptiveBackgroundLearner()
+        let first=refinedTone(5000),second=refinedTone(3000)
+        var additions=0
+        for index in 0..<1500 {
+            let frame=index<100 ? first:second
+            if let next=learner.observe(frame,time:Double(index)*0.01,decision:.quiet,model:model){model=next;additions+=1}
+        }
+        XCTAssertEqual(additions,1)
+        XCTAssertNil(learner.observe(second,time:.nan,decision:.quiet,model:model))
+        var invalid=model;invalid.adaptiveNegatives=Array(repeating:try XCTUnwrap(first.dense),count:9)
+        XCTAssertFalse(invalid.valid)
+        XCTAssertNil(learner.observe(second,time:16,decision:.quiet,model:invalid))
+    }
 }
 #endif
