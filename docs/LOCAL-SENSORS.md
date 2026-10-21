@@ -80,3 +80,7 @@ Apple 參考文件：
 - AVAudioSinkNode：https://developer.apple.com/documentation/avfaudio/avaudiosinknode
 - AVAudioSession：https://developer.apple.com/documentation/avfaudio/avaudiosession
 - WatchConnectivity：https://developer.apple.com/documentation/watchconnectivity/transferring-data-with-watch-connectivity
+
+## 手錶配對識別碼
+
+經使用者明確同意，手錶識別碼改為 `org.local.AirsoftSmartAmmo.phone.watch`，符合手機 `org.local.AirsoftSmartAmmo.phone` 的前綴規則；Team、手機識別碼與其他簽章設定不變。舊手錶 App 保留，新 App 首次先接收手機計數／彈匣快照，再開始發布本機狀態，避免新裝置的空白彈匣覆蓋手機；手錶自己的事件佇列與單調累計保留。新 App 需在手錶實際位置重新收錄特徵。
