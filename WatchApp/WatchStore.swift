@@ -766,29 +766,44 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     private let ringLock=NSLock()
     private var ring=[Float](repeating:0,count:32768)
     private var ringRead=0,ringWrite=0
+    private var ringEndingAt:Double?
+    private var ringDiscontinuous=false
+    private var lastDecisionAt:Double = -.infinity
     private var wake:DispatchSourceUserDataAdd!
     init(){
         wake=DispatchSource.makeUserDataAddSource(queue:queue)
         wake.setEventHandler{[weak self] in self?.drain()};wake.resume()
     }
     func configure(rate:Double){queue.async {
-        self.ringLock.lock();self.ringRead=0;self.ringWrite=0;self.ringLock.unlock()
+        self.ringLock.lock();self.ringRead=0;self.ringWrite=0;self.ringEndingAt=nil;self.ringDiscontinuous=false;self.ringLock.unlock()
         self.analyzer=RealtimeSpectrumAnalyzer(sampleRate:rate)
         self.windows=self.analyzer.flatMap{AudioWindowStream(sampleRate:rate,size:$0.size)}
         self.gate=LocalTriggerGate();self.refinedDetector=LocalAcousticDetector()
     }}
     // Called by the audio IO thread: bounded copy, never waits on a lock or runs FFT.
-    func ingest(_ pointer:UnsafePointer<Float>,count:Int,stride:Int){
+    func ingest(_ pointer:UnsafePointer<Float>,count:Int,stride:Int,endingAt:Double){
         guard ringLock.try() else{return}
+        let available=(ringRead-ringWrite+ring.count-1)%ring.count
+        // If overloaded, discard the old backlog instead of joining audio across
+        // a dropped buffer. Drain will reset analysis before processing fresh data.
+        if count>available {ringRead=0;ringWrite=0;ringDiscontinuous=true}
+        guard count<ring.count else{ringEndingAt=nil;ringLock.unlock();wake.add(data:1);return}
         for i in 0..<count {let next=(ringWrite+1)%ring.count;if next==ringRead {break};ring[ringWrite]=pointer[i*stride];ringWrite=next}
+        ringEndingAt=endingAt
         ringLock.unlock();wake.add(data:1)
     }
     private func drain(){
         ringLock.lock();var chunk=[Float]();chunk.reserveCapacity((ringWrite-ringRead+ring.count)%ring.count)
-        while ringRead != ringWrite {chunk.append(ring[ringRead]);ringRead=(ringRead+1)%ring.count};ringLock.unlock()
+        while ringRead != ringWrite {chunk.append(ring[ringRead]);ringRead=(ringRead+1)%ring.count}
+        let audioEnd=ringEndingAt,discontinuous=ringDiscontinuous;ringDiscontinuous=false;ringLock.unlock()
         guard !chunk.isEmpty,windows != nil else{return}
+        if discontinuous,let analyzer {
+            windows=AudioWindowStream(sampleRate:analyzer.sampleRate,size:analyzer.size)
+            gate=LocalTriggerGate();refinedDetector=LocalAcousticDetector()
+        }
         let previousGaps=windows!.discontinuities
-        let frames=windows!.append(chunk,endingAt:ProcessInfo.processInfo.systemUptime)
+        guard let audioEnd else{return}
+        let frames=windows!.append(chunk,endingAt:audioEnd)
         if windows!.discontinuities != previousGaps {gate=LocalTriggerGate();refinedDetector=LocalAcousticDetector()}
         for frame in frames {process(frame.samples,time:frame.endingAt)}
     }
@@ -806,7 +821,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         guard armed,triggerMode != 2,let profile else{return}
         if let model=refined {
             let hit=refinedDetector.update(spectrum,time:now,model:model,needsMotion:triggerMode==1,motionOK:movement>=motionThreshold)
-            onDecision?(refinedDetector.decision.text,refinedDetector.score)
+            if now-lastDecisionAt>=0.06 {lastDecisionAt=now;onDecision?(refinedDetector.decision.text,refinedDetector.score)}
             if hit {onShot?(refinedDetector.eventTime ?? now)};return
         }
         let match=profile.accepts(spectrum) && (triggerMode==0 || movement>=motionThreshold)
@@ -945,9 +960,14 @@ private final class LocalAudioProcessor: @unchecked Sendable {
             processor.configure(rate:format.sampleRate)
             guard format.commonFormat == .pcmFormatFloat32 else{throw AmmoError.invalidValue}
             let stride=format.isInterleaved ? Int(format.channelCount):1
-            let sink=AVAudioSinkNode {_,count,buffers in
+            let rate=format.sampleRate
+            let sink=AVAudioSinkNode {timestamp,count,buffers in
                 let first=buffers.pointee.mBuffers
-                if let data=first.mData {dsp.ingest(data.assumingMemoryBound(to:Float.self),count:Int(count),stride:stride)}
+                // Carry the input buffer's clock through the queue. DSP scheduling
+                // delays must not look like discontinuities in the recorded audio.
+                let stamp=timestamp.pointee
+                let start=stamp.mFlags.contains(.hostTimeValid) ? AVAudioTime.seconds(forHostTime:stamp.mHostTime):ProcessInfo.processInfo.systemUptime
+                if let data=first.mData {dsp.ingest(data.assumingMemoryBound(to:Float.self),count:Int(count),stride:stride,endingAt:start+Double(count)/rate)}
                 return noErr
             }
             sinkNode=sink;audioEngine.attach(sink);audioEngine.connect(input,to:sink,format:format)
@@ -1004,7 +1024,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     }
     private func accept(_ frame:AudioSpectrum,peak:Double,block:Double,motionCount:Int){
         guard listening else{return}
-        maximumAnalysisMS=max(maximumAnalysisMS,block)
+        if block>maximumAnalysisMS {maximumAnalysisMS=block}
         // 8 seconds at roughly 94 windows/second exceeds the old 600-frame cap.
         if validating && validationFrames.count<1024 {validationFrames.append(frame)}
         if trainingPhase==1 {quietFrames.append(frame)}else if trainingPhase==2 {targetFrames.append(frame);collectedMotion.append(peak)}

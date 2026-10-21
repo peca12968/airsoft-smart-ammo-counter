@@ -752,7 +752,8 @@ public struct LocalAcousticDetector {
         // A valid matching onset can precede a briefly clipped microphone peak.
         // Clipped spectra cannot create or confirm an event; only bridge its
         // envelope inside the existing deadline, then require an unclipped decay.
-        if frame.flags == 2,let start=pendingAt,time>=start,time-start<=0.10 {
+        if frame.flags == 2,let start=pendingAt,time>=start,
+           time-start<=0.10 || (pendingClippedAt != nil && time-start<=0.132) {
             peak=max(peak,frame.rms);pendingClippedAt=time;decision = .confirming;return false
         }
         guard frame.flags & 14 == 0 else{pendingAt=nil;return false}
