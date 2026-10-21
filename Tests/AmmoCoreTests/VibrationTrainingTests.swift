@@ -576,6 +576,21 @@ extension VibrationTrainingTests {
         XCTAssertEqual(detector.decision,.weakContrast)
     }
 
+    func testClippedPeakCanCrossOriginalDeadlineButNeverFixedGraceDeadline() throws {
+        let model=try refinedFixture().model
+        for duration in [0.117,0.140] {
+            var detector=LocalAcousticDetector()
+            _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+            _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+            XCTAssertFalse(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+            for offset in [0.03,0.06,0.09,0.107] {
+                XCTAssertFalse(detector.update(try clippedTone(),time:0.08+offset,model:model))
+            }
+            XCTAssertEqual(detector.update(refinedTone(1250,0.15),time:0.08+duration,model:model),duration<0.132)
+            XCTAssertFalse(detector.update(refinedTone(1250,0.08),time:0.08+duration+0.01,model:model))
+        }
+    }
+
     func testPerDeviceLevelReferenceAndLegacyModelsAreCompatible() throws {
         let model=try refinedFixture().model
         XCTAssertNotNil(model.referencePeakRMS)
