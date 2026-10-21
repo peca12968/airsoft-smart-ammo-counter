@@ -2,6 +2,20 @@ import XCTest
 @testable import AmmoCore
 
 final class WatchFeedbackTests:XCTestCase {
+    func testNotificationStaysPendingUntilScheduledAndStaleAckDoesNotEraseEmpty(){
+        var state=LowAmmoFeedback();state.update(remaining:3,capacity:30)
+        XCTAssertEqual(state.pendingWarning,.low)
+        XCTAssertNil(state.takePending(active:false));XCTAssertEqual(state.pendingWarning,.low)
+        state.update(remaining:0,capacity:30);state.acknowledge(.low)
+        XCTAssertEqual(state.pendingWarning,.empty)
+        state.acknowledge(.empty);XCTAssertNil(state.pendingWarning)
+    }
+    func testReloadClearsPendingNotification(){
+        var state=LowAmmoFeedback();state.update(remaining:0,capacity:30)
+        state.update(remaining:30,capacity:30);state.acknowledge(.empty)
+        XCTAssertNil(state.pendingWarning)
+        state.update(remaining:4,capacity:30);XCTAssertEqual(state.pendingWarning,.low)
+    }
     func testThresholdCrossingWarnsOnceAndReloadRearms(){
         var state=LowAmmoFeedback()
         state.update(remaining:45,capacity:300);XCTAssertNil(state.takePending(active:true))

@@ -2,6 +2,7 @@ import Foundation
 import Combine
 #if os(watchOS)
 import WatchKit
+@preconcurrency import UserNotifications
 #elseif os(iOS)
 import UIKit
 #endif
@@ -909,6 +910,13 @@ private final class WatchAudioWorker:@unchecked Sendable {
     private var relayRetryBudget=RelayRetryBudget()
     private var relayRetryCount=0
     private var lowAmmoFeedback=LowAmmoFeedback()
+    @Published private(set) var lowAlertStatus="低彈量提醒：等待通知權限"
+    private var lowNotificationReady=false,lowNotificationKnown=false,lowAuthorizationBusy=false
+    private var lowNotificationGeneration=UUID()
+    private var lowNotificationFlight:String?
+    private var lowNotificationIssued=false
+    private var lowNotificationRetryAfter=Date.distantPast
+    private var screenDimmed=false
     @Published private(set) var reloadPending=false
     private var reloadRequestID:UUID?
     private var reloadTimeout:Task<Void,Never>?
@@ -921,7 +929,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
     @Published private(set) var watchControl:WatchControlStatus?
     @Published private(set) var watchControlPending=false
     @Published private(set) var watchControlNote="請在手錶開啟 Ammo 雙端"
-    nonisolated static let buildLabel="2026/10/21 21:55"
+    nonisolated static let buildLabel="2026/10/21 22:10"
     private var settingsReady=false
     private var foreground=false
     private var dimmedAudioFrames=0,dimmedRelayAcknowledgements=0
@@ -959,9 +967,77 @@ private final class WatchAudioWorker:@unchecked Sendable {
     var isLowAmmo:Bool {Double(remaining)/Double(ledger.capacity)<0.15}
     private func deliverLowAmmoFeedback(){
         #if os(watchOS)
-        if let warning=lowAmmoFeedback.takePending(active:foreground) {
+        guard let warning=lowAmmoFeedback.pendingWarning,lowNotificationKnown else{return}
+        if lowNotificationReady {
+            guard lowNotificationFlight==nil,Date()>=lowNotificationRetryAfter else{return}
+            let id="ammo-\(lowNotificationGeneration.uuidString)-\(warning.rawValue)"
+            if warning == .empty {
+                UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers:["ammo-\(lowNotificationGeneration.uuidString)-1"])
+            }
+            lowNotificationFlight=id;lowNotificationIssued=true
+            let content=UNMutableNotificationContent()
+            content.title=warning == .empty ? "估計彈匣已空":"低彈量提醒"
+            content.body="估計剩餘 \(remaining)／\(ledger.capacity)；雙點手錶數字可裝填。"
+            content.sound = .default
+            let request=UNNotificationRequest(identifier:id,content:content,trigger:UNTimeIntervalNotificationTrigger(timeInterval:1,repeats:false))
+            UNUserNotificationCenter.current().add(request){[weak self] error in Task{@MainActor in
+                guard let self else{return}
+                guard self.lowNotificationFlight==id else{
+                    UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers:[id]);return
+                }
+                self.lowNotificationFlight=nil
+                if let error {
+                    self.lowNotificationRetryAfter=Date().addingTimeInterval(5)
+                    self.lowAlertStatus="通知排程失敗：\(error.localizedDescription)";self.saveAlertDiagnostics("scheduleFailed")
+                    Task{@MainActor [weak self] in try? await Task.sleep(nanoseconds:5_000_000_000);self?.deliverLowAmmoFeedback()}
+                    return
+                }
+                self.lowAmmoFeedback.acknowledge(warning);self.lowAlertStatus="低彈量通知已啟用 · 由系統提醒"
+                self.saveAlertDiagnostics("scheduled")
+                self.deliverLowAmmoFeedback()
+            }}
+        } else if foreground && !screenDimmed && WKExtension.shared().applicationState == .active,
+                  let warning=lowAmmoFeedback.takePending(active:true) {
             WKInterfaceDevice.current().play(warning == .empty ? .failure:.notification)
+            lowAlertStatus="通知未允許 · 僅亮屏震動";saveAlertDiagnostics("foregroundFallback")
         }
+        #endif
+    }
+    func setScreenDimmed(_ value:Bool){screenDimmed=value;if !value {deliverLowAmmoFeedback()}}
+    private func updateLowAmmoFeedback(){
+        lowAmmoFeedback.update(remaining:remaining,capacity:ledger.capacity)
+        #if os(watchOS)
+        if !isLowAmmo && lowNotificationIssued {
+            let ids=[1,2].map{"ammo-\(lowNotificationGeneration.uuidString)-\($0)"}
+            lowNotificationFlight=nil;lowNotificationIssued=false;lowNotificationGeneration=UUID();lowNotificationRetryAfter = .distantPast
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers:ids)
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers:ids)
+        }
+        #endif
+        deliverLowAmmoFeedback()
+    }
+    private func prepareLowAmmoNotifications(){
+        #if os(watchOS)
+        guard !lowAuthorizationBusy else{return};lowAuthorizationBusy=true
+        Task{@MainActor in
+            defer {lowAuthorizationBusy=false}
+            let center=UNUserNotificationCenter.current()
+            var settings=await center.notificationSettings()
+            if settings.authorizationStatus == .notDetermined && foreground {
+                do {_ = try await center.requestAuthorization(options:[.alert,.sound])}catch{lowAlertStatus="無法要求通知權限"}
+                settings=await center.notificationSettings()
+            }
+            lowNotificationKnown=true
+            lowNotificationReady=settings.authorizationStatus == .authorized && settings.soundSetting == .enabled
+            lowAlertStatus=lowNotificationReady ? "低彈量通知已啟用":"請允許 Ammo 雙端通知與聲音，才能在變暗時提醒"
+            updateLowAmmoFeedback();saveAlertDiagnostics("authorizationChecked")
+        }
+        #endif
+    }
+    private func saveAlertDiagnostics(_ event:String){
+        #if os(watchOS)
+        let report:[String:Any]=["build":Self.buildLabel,"event":event,"notificationAllowed":lowNotificationReady,"foreground":foreground,"dimmed":screenDimmed,"lowPowerMode":ProcessInfo.processInfo.isLowPowerModeEnabled,"remaining":remaining,"status":lowAlertStatus,"time":Date().timeIntervalSince1970]
+        if let data=try? JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys]) {try? data.write(to:folder.appendingPathComponent("local-ammo-alert.json"),options:.atomic)}
         #endif
     }
     var relativeLevelText:String {
@@ -987,6 +1063,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
         super.init()
         storageReady=readable
         #if os(watchOS)
+        UNUserNotificationCenter.current().delegate=self
         awaitingPhoneSnapshot = !UserDefaults.standard.bool(forKey:"watch-phone-snapshot-v1")
         #endif
         if ledger.soundFusion==nil {ledger.soundFusion=SoundFusionState(owner:origin)}
@@ -1127,6 +1204,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
     func setWatchScene(_ scene:CaptureSceneState){
         #if os(watchOS)
         foreground=scene == .active
+        if foreground {prepareLowAmmoNotifications()}
         let existingRecording=listening && audioEngine.isRunning
         if CaptureLifecycle.shouldStop(scene:scene,isWatch:true,recordingRunning:existingRecording,backgroundAudioEnabled:backgroundRecordingEnabled) {stop()}
         deliverLowAmmoFeedback()
@@ -1346,7 +1424,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
         guard storageReady,!awaitingPhoneSnapshot else{message="請先與手機同步一次計數，再使用手錶裝填。";return}
         let before=ledger;ledger.reload(origin:origin)
         guard persist() else{ledger=before;return}
-        lowAmmoFeedback.update(remaining:remaining,capacity:ledger.capacity)
+        updateLowAmmoFeedback()
         message="已裝填 · 累計保留";sync()
         #endif
     }
@@ -1427,7 +1505,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
         if ledger != old {guard persist() else{ledger=old;return};sync()}
         #if os(watchOS)
         if localWatchID != nil && armed && ledger.sensorOwner != origin {stop();detail="手機已切換收音來源，手錶計數暫停。"}
-        lowAmmoFeedback.update(remaining:remaining,capacity:ledger.capacity);deliverLowAmmoFeedback()
+        updateLowAmmoFeedback()
         #endif
         #if os(iOS)
         if !watchPrimaryActive && payload["watchLocalMode"] as? Bool != true {dualStatus=dualPeer && paired ? "手錶已連線 · 等待就緒":"手機單端偵測 · 等待手錶連線"}
@@ -1541,7 +1619,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
                     let before=self.ledger
                     for _ in 0..<result.newHits {self.ledger.event(origin:self.origin)}
                     guard self.persist() else{self.ledger=before;self.stop();return}
-                    self.lowAmmoFeedback.update(remaining:self.remaining,capacity:self.ledger.capacity);self.deliverLowAmmoFeedback()
+                    self.updateLowAmmoFeedback()
                 }
                 self.validationHits=result.totalHits
                 if self.foreground {self.decisionText=result.decision}
@@ -1821,4 +1899,14 @@ private final class WatchAudioWorker:@unchecked Sendable {
     nonisolated func sessionDidDeactivate(_ session:WCSession){session.activate()}
     #endif
 }
+#if os(watchOS)
+extension LocalAmmoStore:UNUserNotificationCenterDelegate {
+    nonisolated func userNotificationCenter(_ center:UNUserNotificationCenter,willPresent notification:UNNotification,withCompletionHandler completionHandler:@escaping (UNNotificationPresentationOptions)->Void){
+        // Let watchOS deliver sound/haptics even while the app is frontmost.
+        // No app modal or duplicate WatchKit vibration interrupts recording.
+        completionHandler([.sound])
+        Task{@MainActor in self.saveAlertDiagnostics("foregroundNotificationPresented")}
+    }
+}
+#endif
 #endif
