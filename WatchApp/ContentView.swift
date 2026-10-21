@@ -148,25 +148,32 @@ struct LocalWatchRootView:View {
                     Text("/ \(store.ledger.capacity)").foregroundStyle(.secondary)
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
                     Text(store.listening ? "收音中 · 手機操作":"已停止收音 · 手機操作").font(.caption2).foregroundStyle(.secondary)
+                    if store.isLowAmmo {Text(store.remaining==0 ? "估計已空":"低彈量 · 抬腕震動提醒").font(.caption2).foregroundStyle(.orange)}
+                    if let message=store.message {Text(message).font(.caption2).foregroundStyle(.orange)}
                 }.foregroundStyle(.white).padding(.horizontal,8)
             } else {
             ScrollView {
                 VStack(spacing:12) {
-                    Text("\(store.remaining)").font(.system(size:64,weight:.semibold,design:.rounded)).monospacedDigit().foregroundStyle(.mint)
+                    Text("\(store.remaining)").font(.system(size:64,weight:.semibold,design:.rounded)).monospacedDigit().foregroundStyle(store.isLowAmmo ? .orange:.mint)
+                        .frame(maxWidth:.infinity,minHeight:76).contentShape(Rectangle())
+                        .onTapGesture(count:2){store.requestWatchReload()}
+                        .accessibilityAction(named:Text("重新裝填，保留累計")){store.requestWatchReload()}
+                    Text(store.reloadPending ? "等待手機裝填確認…":"雙點數字裝填 · 累計保留").font(.caption2).foregroundStyle(.secondary)
                     Text("/ \(store.ledger.capacity) · 推估").foregroundStyle(.secondary)
-                    ProgressView(value:Double(store.remaining),total:Double(store.ledger.capacity)).tint(.mint)
+                    ProgressView(value:Double(store.remaining),total:Double(store.ledger.capacity)).tint(store.isLowAmmo ? .orange:.mint)
+                    if store.isLowAmmo {Text(store.remaining==0 ? "估計已空，請裝填":"估計剩餘低於 15%").font(.caption).foregroundStyle(.orange)}
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
                     Text(store.phase).font(.caption).foregroundStyle(store.armed ? .mint:.orange)
                     Text(store.detail).font(.caption2)
                     Text(store.decisionText).font(.caption2).foregroundStyle(.secondary)
                     Text(store.dualStatus).font(.caption2).foregroundStyle(.secondary)
-                    Text("所有操作請用手機。此手錶負責收音與顯示。").font(.caption2).foregroundStyle(.secondary)
+                    if let message=store.message {Text(message).font(.caption2).foregroundStyle(.orange)}
+                    Text("設定與開始／停止請用手機。").font(.caption2).foregroundStyle(.secondary)
                     Text(store.backgroundRecordingEnabled ? "變暗仍收音 · 手機需開啟 App":"手機需開啟 App · 手錶需喚醒").font(.caption2).foregroundStyle(.secondary)
                     Text("更新 \(LocalAmmoStore.buildLabel)").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.horizontal,8)
             }.navigationTitle("Ammo 雙端")
             }
         }.preferredColorScheme(.dark).tint(.mint)
-        .alert("提示",isPresented:Binding(get:{store.message != nil},set:{if !$0 {store.message=nil}})){Button("好"){store.message=nil}}message:{Text(store.message ?? "")}
     }
 }
