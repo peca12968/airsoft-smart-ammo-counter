@@ -83,6 +83,7 @@ public struct LocalAmmoLedger: Codable, Equatable {
 
 public struct LocalTriggerGate {
     private var armed=false
+    var isArmed:Bool {armed}
     private var quietSince:Double?
     private var lastEvent:Double = -.infinity
     public init(){}

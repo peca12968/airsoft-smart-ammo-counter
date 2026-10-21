@@ -479,6 +479,103 @@ extension VibrationTrainingTests {
         XCTAssertEqual(detector.decision,.belowRecordedLevel)
     }
 
+    func testNewRisingAttackBelowPreviousPeakValleyIsNotDiscarded() throws {
+        let model=try refinedFixture().model;var detector=RefinedEventDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertTrue(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+        _ = detector.update(try clippedTone(),time:0.10,model:model)
+        for time in [0.12,0.13,0.14,0.15] {_ = detector.update(refinedTone(1250,0.01),time:time,model:model)}
+        let next=refinedTone(1250,0.04)
+        XCTAssertLessThan(next.rms,try clippedTone().rms*0.35)
+        XCTAssertTrue(detector.update(next,time:0.22,model:model))
+        XCTAssertEqual(try XCTUnwrap(detector.eventTime),0.22,accuracy:0.00001)
+    }
+
+    func testDecayDeadlineStartsAtSpectralQualificationAndPreservesEarlierOnset() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector()
+        var weak=refinedTone(1250,0.01)
+        let target=try XCTUnwrap(weak.dense),other=try XCTUnwrap(refinedTone(1800).dense)
+        var found=false
+        for step in 1..<100 {
+            let mix=Double(step)/100
+            weak.dense=DenseAudioDescriptor(spectrum:zip(target.spectrum,other.spectrum).map{$0*(1-mix)+$1*mix},centroid:target.centroid,flatness:target.flatness,zeroCrossing:target.zeroCrossing,crest:target.crest)
+            let score=model.scores(weak).target
+            if score>=model.minimumScore-0.03 && score<model.minimumScore-0.01 {found=true;break}
+        }
+        XCTAssertTrue(found)
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertFalse(detector.update(weak,time:0.08,model:model))
+        XCTAssertFalse(detector.update(refinedTone(1250,0.06),time:0.12,model:model))
+        XCTAssertFalse(detector.update(try clippedTone(),time:0.14,model:model))
+        XCTAssertTrue(detector.update(refinedTone(1250,0.15),time:0.20,model:model))
+        XCTAssertEqual(try XCTUnwrap(detector.eventTime),0.08,accuracy:0.00001)
+        XCTAssertFalse(detector.update(refinedTone(1250,0.08),time:0.21,model:model))
+    }
+
+    func testFluctuatingLowValleyMustCompleteBeforeNewAttackCanLeaveIt() throws {
+        let model=try refinedFixture().model;var detector=RefinedEventDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertTrue(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+        _ = detector.update(try clippedTone(),time:0.10,model:model)
+        for (time,amplitude) in [(0.14,0.06),(0.15,0.05),(0.16,0.08),(0.17,0.10)] {
+            XCTAssertFalse(detector.update(refinedTone(1250,amplitude),time:time,model:model))
+        }
+        XCTAssertTrue(detector.update(refinedTone(1250,0.25),time:0.19,model:model))
+    }
+
+    func testUnqualifiedAttackCannotBlockFollowingEventsAboveAbsoluteNoiseFloor() throws {
+        let model=try refinedFixture().model;var detector=RefinedEventDetector()
+        var weak=refinedTone(1250,0.04)
+        let target=try XCTUnwrap(weak.dense),other=try XCTUnwrap(refinedTone(1800).dense)
+        var found=false
+        for step in 1..<100 {
+            let mix=Double(step)/100
+            weak.dense=DenseAudioDescriptor(spectrum:zip(target.spectrum,other.spectrum).map{$0*(1-mix)+$1*mix},centroid:target.centroid,flatness:target.flatness,zeroCrossing:target.zeroCrossing,crest:target.crest)
+            let score=model.scores(weak).target
+            if score>=model.minimumScore-0.03 && score<model.minimumScore-0.01 {found=true;break}
+        }
+        XCTAssertTrue(found)
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertTrue(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+        _ = detector.update(try clippedTone(),time:0.10,model:model)
+        for time in [0.12,0.13,0.14,0.15] {_ = detector.update(refinedTone(1250,0.01),time:time,model:model)}
+        for time in [0.22,0.24,0.26] {XCTAssertFalse(detector.update(weak,time:time,model:model))}
+        for time in [0.34,0.35,0.36,0.37] {XCTAssertFalse(detector.update(refinedTone(1250,0.01),time:time,model:model))}
+        XCTAssertTrue(detector.update(refinedTone(1250,0.06),time:0.40,model:model))
+    }
+
+    func testClippedDeadlineAllowsOnlyFirstUnclippedDecayWindow() throws {
+        let model=try refinedFixture().model
+        for decays in [false,true] {
+            var detector=LocalAcousticDetector()
+            _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+            _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+            XCTAssertFalse(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+            XCTAssertFalse(detector.update(try clippedTone(),time:0.17,model:model))
+            XCTAssertEqual(detector.update(refinedTone(1250,decays ? 0.15:0.35),time:0.19,model:model),decays)
+            XCTAssertFalse(detector.update(refinedTone(1250,0.08),time:0.20,model:model))
+        }
+    }
+
+    func testSmallSpectrallyMatchingReboundInTargetTailCannotCountAgain() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertFalse(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+        XCTAssertFalse(detector.update(try clippedTone(),time:0.10,model:model))
+        XCTAssertTrue(detector.update(refinedTone(1250,0.15),time:0.13,model:model))
+        for (time,amplitude) in [(0.16,0.06),(0.17,0.05),(0.18,0.04),(0.19,0.03)] {
+            XCTAssertFalse(detector.update(refinedTone(1250,amplitude),time:time,model:model))
+        }
+        XCTAssertFalse(detector.update(refinedTone(1250,0.057),time:0.22,model:model))
+        XCTAssertFalse(detector.update(refinedTone(1250,0.02),time:0.24,model:model))
+        XCTAssertEqual(detector.decision,.weakContrast)
+    }
+
     func testPerDeviceLevelReferenceAndLegacyModelsAreCompatible() throws {
         let model=try refinedFixture().model
         XCTAssertNotNil(model.referencePeakRMS)
