@@ -754,7 +754,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     var profile:AudioProfile?
     var refined:RefinedAcousticModel?
     var onDecision:((String,Double)->Void)?
-    private var refinedDetector=RefinedEventDetector()
+    private var refinedDetector=LocalAcousticDetector()
     var triggerMode=0 // 0=spectrum, 1=spectrum+motion, 2=motion
     var motionThreshold=0.015
     var armed=false
@@ -775,7 +775,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         self.ringLock.lock();self.ringRead=0;self.ringWrite=0;self.ringLock.unlock()
         self.analyzer=RealtimeSpectrumAnalyzer(sampleRate:rate)
         self.windows=self.analyzer.flatMap{AudioWindowStream(sampleRate:rate,size:$0.size)}
-        self.gate=LocalTriggerGate();self.refinedDetector=RefinedEventDetector()
+        self.gate=LocalTriggerGate();self.refinedDetector=LocalAcousticDetector()
     }}
     // Called by the audio IO thread: bounded copy, never waits on a lock or runs FFT.
     func ingest(_ pointer:UnsafePointer<Float>,count:Int,stride:Int){
@@ -789,7 +789,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         guard !chunk.isEmpty,windows != nil else{return}
         let previousGaps=windows!.discontinuities
         let frames=windows!.append(chunk,endingAt:ProcessInfo.processInfo.systemUptime)
-        if windows!.discontinuities != previousGaps {gate=LocalTriggerGate();refinedDetector=RefinedEventDetector()}
+        if windows!.discontinuities != previousGaps {gate=LocalTriggerGate();refinedDetector=LocalAcousticDetector()}
         for frame in frames {process(frame.samples,time:frame.endingAt)}
     }
     func motion(_ peak:Double,time:Double){queue.async {
@@ -826,6 +826,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     @Published private(set) var motionWave=[Double]()
     @Published private(set) var validating=false
     @Published private(set) var validationHits=0
+    @Published private(set) var validationExpected=5
     @Published private(set) var validationURL:URL?
     @Published private(set) var maximumAnalysisMS=0.0
     private var validationFrames=[AudioSpectrum]()
@@ -895,7 +896,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if ProcessInfo.processInfo.arguments.contains("--local-mic-smoke") {
             Task{@MainActor in
                 await self.start();try? await Task.sleep(nanoseconds:4_000_000_000)
-                let result:[String:Any] = ["build":"tap-recall-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
+                let result:[String:Any] = ["build":"speech-filter-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
                 if let data=try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),let text=String(data:data,encoding:.utf8){print("AMMO_LOCAL_MIC "+text);fflush(stdout)}
                 self.stop()
             }
@@ -997,34 +998,36 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         }
         return "收錄未完成或資料無效，請重新收錄；累計已保留。"
     }
-    func collectBackgroundExamples(){
+    func collectBackgroundExamples(speech:Bool=false){
         guard !training,!validating,refinedReport != nil else{message="請先收錄新版精細特徵。";return}
         task=Task{@MainActor in
             if !listening {await start()};guard listening else{return}
             training=true;armed=false;ledger.claimSensor(origin:origin);persist();sync();applyProcessor();targetFrames=[];trainingPhase=2
-            phase="補收背景 3 秒";detail="現在製造你不想計數的雜音，先不要做目標敲擊。"
+            phase=speech ? "收錄講話聲 3 秒":"補收背景 3 秒";detail=speech ? "現在正常講話，不要敲擊；這段不計入累計。":"現在製造你不想計數的雜音，先不要做目標敲擊。"
             do {
                 try await Task.sleep(nanoseconds:3_000_000_000);trainingPhase=0
                 guard let current=refinedReport else{return}
                 let model=try current.model.addingBackground(targetFrames)
                 refinedReport=RefinedAcousticReport(model:model,events:current.events,excludedEvents:current.excludedEvents,crossEventSimilarity:current.crossEventSimilarity,backgroundRMS:current.backgroundRMS)
-                try saveRefinedReport();training=false;phase="背景範本已加入";detail="將排除這些雜音；累計不變，按啟用計數繼續。";applyProcessor()
+                try saveRefinedReport();training=false;phase=speech ? "講話範本已加入":"背景範本已加入";detail="先試講話確認沒有誤觸，再試敲 5 次；兩種驗證都不增加累計。";applyProcessor()
             }catch{if Task.isCancelled{return};training=false;trainingPhase=0;phase="背景未加入";detail=trainingErrorText(error);applyProcessor()}
         }
     }
-    func validateFiveTaps(){
+    func validateFiveTaps(){validateSession(expected:5)}
+    func validateSpeech(){validateSession(expected:0)}
+    private func validateSession(expected:Int){
         guard !training,!validating,let modelID=refinedReport?.model.base.id else {message="請先收錄新版精細特徵。";return}
         task=Task{@MainActor in
             if !listening {await start()};guard listening else{return}
-            armed=false;validating=true;validationHits=0;validationFrames=[]
+            armed=false;validating=true;validationHits=0;validationExpected=expected;validationFrames=[];validationURL=nil
             ledger.claimSensor(origin:origin);persist();sync();applyProcessor()
-            phase="驗證中，請敲 5 次";detail="等一秒後，每秒敲一次；8 秒後結束。這段不計入累計。"
+            phase=expected==0 ? "驗證中，請正常講話":"驗證中，請敲 5 次";detail=expected==0 ? "5 秒內正常講話，不要敲擊；觀察誤觸次數，這段不計入累計。":"等一秒後，每秒敲一次；8 秒後結束。這段不計入累計。"
             let before=ledger.lifetime
             do {
-                try await Task.sleep(nanoseconds:8_000_000_000);guard !Task.isCancelled else{return}
-                validating=false;applyProcessor();phase="驗證收到 \(validationHits)／5 次"
-                detail="請確認你實際敲了 5 次。若少於 5，降低符合門檻或補收同位置的敲擊樣本。累計未因驗證增加。"
-                let result=LocalAcousticValidation(modelID:modelID,expected:5,detected:validationHits,lifetimeBefore:before,lifetimeAfter:ledger.lifetime,frames:validationFrames)
+                try await Task.sleep(nanoseconds:expected==0 ? 5_000_000_000:8_000_000_000);guard !Task.isCancelled else{return}
+                validating=false;applyProcessor();phase=expected==0 ? "講話誤觸 \(validationHits) 次":"驗證收到 \(validationHits)／5 次"
+                detail=expected==0 ? (validationHits==0 ? "本次講話未觸發；再試敲 5 次確認敲擊仍可辨識。":"仍有誤觸，請補收講話聲後重試；本次沒有增加累計。") : "請確認實際敲了 5 次；若漏算，請在相同位置重新收錄敲擊再試。驗證不增加累計。"
+                let result=LocalAcousticValidation(modelID:modelID,expected:expected,detected:validationHits,lifetimeBefore:before,lifetimeAfter:ledger.lifetime,frames:validationFrames)
                 let url=folder.appendingPathComponent("local-validation-"+String(Int(Date().timeIntervalSince1970))+".json")
                 try JSONEncoder().encode(result).write(to:url,options:.atomic);validationURL=url
             }catch{if Task.isCancelled{return};validating=false;applyProcessor();message="驗證紀錄保存失敗；累計仍保留。"}

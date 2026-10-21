@@ -398,5 +398,94 @@ extension VibrationTrainingTests {
         XCTAssertEqual(report.events,3);XCTAssertTrue(report.model.valid)
         XCTAssertTrue(report.model.noisePower.allSatisfy{$0==0})
     }
+
+    func testSpeechLikeSustainedSyllablesCannotUseInstantSpectrumMatchToCount() throws {
+        let model=try refinedFixture().model
+        var instant=RefinedEventDetector(),verified=LocalAcousticDetector()
+        var instantHits=0,verifiedHits=0
+        for index in 0..<120 {
+            let within=index%40
+            // A voiced harmonic near a target resonance, held over a syllable.
+            let active=(5...25).contains(within)
+            let frame=refinedTone(active ? 1250:250,active ? 0.02:0.0004)
+            let time=Double(index)*0.01
+            if instant.update(frame,time:time,model:model){instantHits+=1}
+            if verified.update(frame,time:time,model:model){verifiedHits+=1}
+        }
+        XCTAssertEqual(instantHits,3)
+        XCTAssertEqual(verifiedHits,0)
+    }
+
+    func testShortWeakTapsStillConfirmOnceAfterDecay() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector();var hits=0
+        for index in 0..<3 {
+            let start=Double(index)*0.4
+            _ = detector.update(refinedTone(250,0.0004),time:start,model:model)
+            _ = detector.update(refinedTone(250,0.0004),time:start+0.04,model:model)
+            XCTAssertFalse(detector.update(refinedTone(1250,0.006),time:start+0.08,model:model))
+            if detector.update(refinedTone(1250,0.002),time:start+0.10,model:model){hits+=1}
+            XCTAssertFalse(detector.update(refinedTone(1250,0.001),time:start+0.12,model:model))
+        }
+        XCTAssertEqual(hits,3)
+    }
+
+    func testOneContaminatedTrainingEventCannotAuthorizeUnrelatedSound() throws {
+        let base=try refinedFixture().model,voice=refinedTone(4000)
+        let extra=try XCTUnwrap(base.cleaned(voice))
+        let prototypes=base.prototypes+[extra,extra]
+        let groups=prototypes.indices.map{$0/2}
+        let model=RefinedAcousticModel(version:2,base:base.base,noisePower:base.noisePower,prototypes:prototypes,negatives:[],minimumScore:0.8,minimumRise:1.15,prototypeGroups:groups)
+        XCTAssertTrue(model.valid)
+        XCTAssertGreaterThan(model.scores(voice).target,0.99)
+        XCTAssertFalse(model.supportsAcrossEvents(voice))
+        var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertFalse(detector.update(voice,time:0.08,model:model))
+        XCTAssertFalse(detector.update(refinedTone(4000,0.004),time:0.10,model:model))
+    }
+
+    func testGroupedModelsRoundTripAndExistingModelsWithoutGroupsStillWork() throws {
+        let model=try refinedFixture().model
+        let data=try JSONEncoder().encode(model)
+        let restored=try JSONDecoder().decode(RefinedAcousticModel.self,from:data)
+        XCTAssertTrue(restored.valid);XCTAssertEqual(restored.prototypeGroups,model.prototypeGroups)
+        var old=try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any])
+        old.removeValue(forKey:"prototypeGroups")
+        let legacy=try JSONDecoder().decode(RefinedAcousticModel.self,from:JSONSerialization.data(withJSONObject:old))
+        XCTAssertNil(legacy.prototypeGroups);XCTAssertTrue(legacy.valid)
+        XCTAssertTrue(legacy.supportsAcrossEvents(refinedTone(1250)))
+        let malformed=RefinedAcousticModel(version:2,base:model.base,noisePower:model.noisePower,prototypes:model.prototypes,negatives:[],minimumScore:model.minimumScore,minimumRise:model.minimumRise,prototypeGroups:[0])
+        XCTAssertFalse(malformed.valid);XCTAssertFalse(malformed.supportsAcrossEvents(refinedTone(1250)))
+    }
+
+    func testBackgroundVetoAppliesBeforeShortSoundCanBeCommitted() throws {
+        let base=try refinedFixture().model;var sound=refinedTone(1250)
+        let d=try XCTUnwrap(sound.dense)
+        sound.dense=DenseAudioDescriptor(spectrum:d.spectrum.map{$0*0.92+0.08/24},centroid:d.centroid,flatness:d.flatness,zeroCrossing:d.zeroCrossing,crest:d.crest)
+        let model=try base.addingBackground([sound]);var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertFalse(detector.update(sound,time:0.08,model:model))
+        XCTAssertFalse(detector.update(refinedTone(250,0.0004),time:0.10,model:model))
+    }
+
+    func testInterruptedCandidateCannotBecomeAnEventAfterLongAudioGap() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertFalse(detector.update(refinedTone(1250),time:0.08,model:model))
+        XCTAssertFalse(detector.update(refinedTone(250,0.0004),time:0.4,model:model))
+        XCTAssertEqual(detector.decision,.sustained)
+    }
+
+    func testMotionConfirmedPathStillCountsOneWhenAudioCallbackComesFirst() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model,needsMotion:true,motionOK:false)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model,needsMotion:true,motionOK:false)
+        XCTAssertFalse(detector.update(refinedTone(1250),time:0.08,model:model,needsMotion:true,motionOK:false))
+        XCTAssertTrue(detector.confirmMotion(time:0.12,refractory:0.1))
+        XCTAssertFalse(detector.confirmMotion(time:0.13,refractory:0.1))
+    }
 }
 #endif

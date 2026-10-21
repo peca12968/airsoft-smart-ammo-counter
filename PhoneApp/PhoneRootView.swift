@@ -355,7 +355,9 @@ struct LocalPhoneRootView:View {
                     }.controlSize(.large)
                     Button(store.training ? "收錄中…":"收錄聲音與震動特徵") {store.train()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
                     if let model=store.refinedReport {
-                        Button(store.validating ? "驗證已收到 \(store.validationHits)／5 次":"試敲 5 次（不計入累計）") {store.validateFiveTaps()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
+                        Button(store.validating && store.validationExpected==5 ? "驗證已收到 \(store.validationHits)／5 次":"試敲 5 次（不計入累計）") {store.validateFiveTaps()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
+                        Button("排除講話聲（3 秒）") {store.collectBackgroundExamples(speech:true)}.buttonStyle(.bordered).disabled(store.training || store.validating)
+                        Button(store.validating && store.validationExpected==0 ? "講話誤觸 \(store.validationHits) 次":"試講話 5 秒（不計入累計）") {store.validateSpeech()}.buttonStyle(.bordered).disabled(store.training || store.validating)
                         if let url=store.validationURL {ShareLink("匯出驗證特徵紀錄",item:url)}
                         Text("24 頻帶 · \(model.events) 個敲擊範本 · \(model.model.negatives.count) 個背景範本").font(.caption).foregroundStyle(.secondary)
                         Button("補收誤觸／背景聲音") {store.collectBackgroundExamples()}.buttonStyle(.bordered).disabled(store.training || store.validating)
