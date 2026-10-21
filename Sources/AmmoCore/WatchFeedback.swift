@@ -1,10 +1,12 @@
 import Foundation
 
-/// One warning per magazine threshold, deferred until watchOS permits haptics.
+/// One warning per magazine threshold, retained until notification scheduling
+/// succeeds or an active-watch haptic consumes it.
 public struct LowAmmoFeedback {
     public enum Warning:Int,Equatable {case low=1,empty=2}
     private var highest=0
     private var pending:Warning?
+    public var pendingWarning:Warning? {pending}
     public init(){}
     public mutating func update(remaining:Int,capacity:Int){
         guard (1...9999).contains(capacity),(0...capacity).contains(remaining) else{return}
@@ -15,6 +17,9 @@ public struct LowAmmoFeedback {
     public mutating func takePending(active:Bool)->Warning? {
         guard active else{return nil}
         defer {pending=nil};return pending
+    }
+    public mutating func acknowledge(_ warning:Warning){
+        if pending==warning {pending=nil}
     }
 }
 

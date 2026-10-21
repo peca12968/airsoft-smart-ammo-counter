@@ -148,7 +148,7 @@ struct LocalWatchRootView:View {
                     Text("/ \(store.ledger.capacity)").foregroundStyle(.secondary)
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
                     Text(store.armed ? "本機計數中":(store.listening ? "收音中":"等待手機自動開始")).font(.caption2).foregroundStyle(.secondary)
-                    if store.isLowAmmo {Text(store.remaining==0 ? "估計已空":"低彈量 · 抬腕震動提醒").font(.caption2).foregroundStyle(.orange)}
+                    if store.isLowAmmo {Text(store.remaining==0 ? "估計已空":"低彈量").font(.caption2).foregroundStyle(.orange)}
                     if let message=store.message {Text(message).font(.caption2).foregroundStyle(.orange)}
                 }.foregroundStyle(.white).padding(.horizontal,8)
             } else {
@@ -162,6 +162,7 @@ struct LocalWatchRootView:View {
                     Text("/ \(store.ledger.capacity) · 推估").foregroundStyle(.secondary)
                     ProgressView(value:Double(store.remaining),total:Double(store.ledger.capacity)).tint(store.isLowAmmo ? .orange:.mint)
                     if store.isLowAmmo {Text(store.remaining==0 ? "估計已空，請裝填":"估計剩餘低於 15%").font(.caption).foregroundStyle(.orange)}
+                    Text(store.lowAlertStatus).font(.caption2).foregroundStyle(.secondary)
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
                     Text(store.phase).font(.caption).foregroundStyle(store.armed ? .mint:.orange)
                     Text(store.detail).font(.caption2)
@@ -175,5 +176,7 @@ struct LocalWatchRootView:View {
             }.navigationTitle("Ammo 雙端")
             }
         }.preferredColorScheme(.dark).tint(.mint)
+        .onAppear {store.setScreenDimmed(isLuminanceReduced)}
+        .onChange(of:isLuminanceReduced){_,dimmed in store.setScreenDimmed(dimmed)}
     }
 }
