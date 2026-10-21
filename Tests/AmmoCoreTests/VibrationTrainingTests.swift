@@ -488,6 +488,51 @@ extension VibrationTrainingTests {
         XCTAssertFalse(detector.confirmMotion(time:0.13,refractory:0.1))
     }
 
+    func testPrimaryFeatureRestoreDropsAutomaticVetoAndKeepsRecordedModel() throws {
+        let original=try refinedFixture()
+        var model=original.model
+        model.negatives=[try XCTUnwrap(model.cleaned(refinedTone(3000)))]
+        let target=refinedTone(1250)
+        model.adaptiveNegatives=[try XCTUnwrap(model.cleaned(target))]
+        let saved=RefinedAcousticReport(model:model,events:original.events,excludedEvents:2,crossEventSimilarity:original.crossEventSimilarity,backgroundRMS:original.backgroundRMS)
+        let restored=saved.withoutAutomaticBackground()
+        XCTAssertGreaterThan(saved.model.scores(target).background,0.99)
+        XCTAssertLessThan(restored.model.scores(target).background,model.minimumScore)
+        XCTAssertEqual(restored.model.scores(target).target,saved.model.scores(target).target)
+        XCTAssertEqual(restored.model.prototypes,model.prototypes)
+        XCTAssertEqual(restored.model.prototypeGroups,model.prototypeGroups)
+        XCTAssertEqual(restored.model.negatives,model.negatives)
+        XCTAssertEqual(restored.model.base,model.base)
+        XCTAssertEqual(restored.model.noisePower,model.noisePower)
+        XCTAssertEqual(restored.model.minimumScore,model.minimumScore)
+        XCTAssertEqual(restored.model.minimumRise,model.minimumRise)
+        XCTAssertEqual(restored.events,saved.events);XCTAssertEqual(restored.excludedEvents,2)
+        XCTAssertEqual(restored.crossEventSimilarity,saved.crossEventSimilarity)
+        XCTAssertEqual(restored.backgroundRMS,saved.backgroundRMS)
+        XCTAssertTrue(restored.model.valid)
+        var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:restored.model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:restored.model)
+        XCTAssertFalse(detector.update(refinedTone(1250,0.006),time:0.08,model:restored.model))
+        XCTAssertTrue(detector.update(refinedTone(1250,0.002),time:0.10,model:restored.model))
+    }
+
+    func testPrimaryFeatureRestoreIsIdempotentForLegacyAndBackupModels() throws {
+        let original=try refinedFixture()
+        var model=original.model
+        model.adaptiveNegatives=[try XCTUnwrap(model.cleaned(refinedTone(5000)))]
+        for candidate in [original,RefinedAcousticReport(model:model,events:original.events,excludedEvents:0,crossEventSimilarity:original.crossEventSimilarity,backgroundRMS:original.backgroundRMS)] {
+            let decoded=try JSONDecoder().decode(RefinedAcousticReport.self,from:JSONEncoder().encode(candidate))
+            let restored=decoded.withoutAutomaticBackground()
+            let reloaded=try JSONDecoder().decode(RefinedAcousticReport.self,from:JSONEncoder().encode(restored)).withoutAutomaticBackground()
+            XCTAssertTrue(reloaded.model.valid);XCTAssertEqual(reloaded.model.adaptiveNegatives,[])
+            XCTAssertEqual(reloaded.model.prototypes,original.model.prototypes)
+            XCTAssertEqual(reloaded.legacyReport.profile,original.legacyReport.profile)
+            let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+            XCTAssertEqual(try encoder.encode(restored),try encoder.encode(reloaded))
+        }
+    }
+
     func testAdaptiveLearnerRequiresSustainedUnrelatedAudioAndPreservesAnchors() throws {
         let model=try refinedFixture().model,background=refinedTone(5000,0.02)
         var learner=AdaptiveBackgroundLearner(),learned:RefinedAcousticModel?
