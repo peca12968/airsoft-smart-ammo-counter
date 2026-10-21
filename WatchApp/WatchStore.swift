@@ -898,9 +898,13 @@ private final class WatchAudioWorker:@unchecked Sendable {
     @Published private(set) var watchControl:WatchControlStatus?
     @Published private(set) var watchControlPending=false
     @Published private(set) var watchControlNote="請在手錶開啟 Ammo 雙端"
-    nonisolated static let buildLabel="2026/10/21 20:58"
+    nonisolated static let buildLabel="2026/10/21 21:19"
     private var settingsReady=false
     private var foreground=false
+    private var dimmedAudioFrames=0,dimmedRelayAcknowledgements=0
+    var backgroundRecordingEnabled:Bool {
+        (Bundle.main.object(forInfoDictionaryKey:"UIBackgroundModes") as? [String])?.contains("audio") == true
+    }
     private var controlReplies=[UUID:[String:Any]]()
     private var controlOrder=[UUID]()
     private let origin:String
@@ -967,7 +971,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
         }
         settingsReady=true
         processor.onDecision={[weak self] reason,score in Task{@MainActor in
-            guard let self,self.listening else{return};if self.decisionText != reason || abs(self.matchScore-score)>0.03 {self.decisionText=reason;self.matchScore=score}
+            guard let self,self.listening,self.foreground else{return};if self.decisionText != reason || abs(self.matchScore-score)>0.03 {self.decisionText=reason;self.matchScore=score}
         }}
         processor.onFrame={[weak self] frame,peak,block,count,time in Task{@MainActor in self?.accept(frame,peak:peak,block:block,motionCount:count,audioTime:time)}}
         processor.onShot={[weak self] onset in
@@ -1015,6 +1019,9 @@ private final class WatchAudioWorker:@unchecked Sendable {
         let permission=await withCheckedContinuation {continuation in AVAudioApplication.requestRecordPermission{continuation.resume(returning:$0)}}
         guard !Task.isCancelled else{return}
         guard permission else{message="請到設定允許 Ammo Estimate 使用麥克風。";return}
+        #if os(watchOS)
+        guard foreground else{message="請先喚醒手錶並開啟 Ammo 雙端，再從手機開始收音。";return}
+        #endif
         do {
             let audio=AVAudioSession.sharedInstance();try audio.setCategory(.record,mode:.measurement,options:[])
             #if os(iOS)
@@ -1068,6 +1075,13 @@ private final class WatchAudioWorker:@unchecked Sendable {
         audioEngine.stop();if let sink=sinkNode {audioEngine.disconnectNodeInput(sink);audioEngine.detach(sink);sinkNode=nil}
         motion.stopDeviceMotionUpdates();try? AVAudioSession.sharedInstance().setActive(false,options:.notifyOthersOnDeactivation);phase="已停止"
     }
+    func setWatchScene(_ scene:CaptureSceneState){
+        #if os(watchOS)
+        foreground=scene == .active
+        let existingRecording=listening && audioEngine.isRunning
+        if CaptureLifecycle.shouldStop(scene:scene,isWatch:true,recordingRunning:existingRecording,backgroundAudioEnabled:backgroundRecordingEnabled) {stop()}
+        #endif
+    }
     func setActive(_ active:Bool){foreground=active;if !active {
         stop()
         #if os(iOS)
@@ -1110,6 +1124,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
     private func accept(_ frame:AudioSpectrum,peak:Double,block:Double,motionCount:Int,audioTime:Double){
         guard listening else{return}
         #if os(watchOS)
+        if !foreground {dimmedAudioFrames+=1}
         if relayReady && !relayFinishing {
             relayFrames.append(WatchAudioFrame(spectrum:frame,motion:peak,time:audioTime))
             if relayFrames.count>256 {failRelay("傳輸跟不上收音，已暫停；已確認的計數保留。");return}
@@ -1120,7 +1135,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
         // 8 seconds at roughly 94 windows/second exceeds the old 600-frame cap.
         if validating && validationFrames.count<1024 {validationFrames.append(frame)}
         if trainingPhase==1 {quietFrames.append(frame)}else if trainingPhase==2 {targetFrames.append(frame);collectedMotion.append(peak)}
-        if Date().timeIntervalSince(lastPaint)>0.06 {lastPaint=Date();spectrum=frame;motionG=peak;motionSamples=motionCount;spectrumWave=Array((spectrumWave+[frame.rms]).suffix(80));motionWave=Array((motionWave+[peak]).suffix(80))}
+        if Date().timeIntervalSince(lastPaint)>(foreground ? 0.06:1.0) {lastPaint=Date();spectrum=frame;motionG=peak;motionSamples=motionCount;spectrumWave=Array((spectrumWave+[frame.rms]).suffix(80));motionWave=Array((motionWave+[peak]).suffix(80))}
     }
     func train(includeSpeech:Bool=false){
         #if os(iOS)
@@ -1368,6 +1383,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
                 guard let self,self.relayID==request.id else{return}
                 guard reply["relayReady"] as? String==request.id.uuidString else{self.failRelay(reply["relayError"] as? String ?? "手機版本不支援手錶收音，請更新兩端。");return}
                 self.relayStarting=false;self.relayReady=true;self.validating=validation;self.armed = !validation
+                self.dimmedAudioFrames=0;self.dimmedRelayAcknowledgements=0
                 self.validationExpected=expected;self.validationHits=0;self.validationFrames=[];self.validationURL=nil;self.applyProcessor()
                 self.phase=validation ? (expected==0 ? "驗證中，請正常講話":"驗證中，請擊發 5 次"):"手錶收音 · 手機計數"
                 self.detail=validation ? (expected==0 ? "正常講話 5 秒，不要製造目標聲；不增加累計。":"等一秒後，以要驗證的速度製造 5 次聲音；不增加累計。"):"保持手機 App 開啟，計數由手機回傳。"
@@ -1380,7 +1396,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
                     }
                 }
             }},errorHandler:{[weak self] _ in Task{@MainActor in
-                guard self?.relayID==request.id else{return};self?.failRelay("手機未回應，請確認兩端 App 都在前景。")
+                guard self?.relayID==request.id else{return};self?.failRelay("手機未回應，請確認手機 App 開啟；開始收音時需先喚醒手錶。")
             }})
         }
         #endif
@@ -1402,6 +1418,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
             guard let data=reply["relayResult"] as? Data,let result=try? PropertyListDecoder().decode(WatchAudioResult.self,from:data),result.sequence==batch.sequence else {
                 self.failRelay(reply["relayError"] as? String ?? "手機未確認聲音資料，請重新開始。");return
             }
+            if !self.foreground {self.dimmedRelayAcknowledgements+=1}
             self.relaySending=false;self.relayFrames.removeFirst(frames.count);self.relaySequence+=1
             self.receive(reply);self.decisionText=result.decision
             self.dualStatus=result.gaps>0 ? "音訊中斷 \(result.gaps) 次 · 可能漏記":"手錶收音 · 手機已確認"
@@ -1411,7 +1428,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
                 do {
                     let url=self.folder.appendingPathComponent("local-validation-"+String(Int(Date().timeIntervalSince1970))+".json")
                     try JSONEncoder().encode(record).write(to:url,options:.atomic);self.validationURL=url
-                    let diagnostics:[String:Any] = ["build":Self.buildLabel,"phoneAnalysis":true,"detected":result.totalHits,"gaps":result.gaps,"frames":self.validationFrames.count,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"before":self.relayBefore,"after":self.ledger.lifetime]
+                    let diagnostics:[String:Any] = ["build":Self.buildLabel,"phoneAnalysis":true,"detected":result.totalHits,"gaps":result.gaps,"frames":self.validationFrames.count,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"dimmedAudioFrames":self.dimmedAudioFrames,"dimmedRelayAcknowledgements":self.dimmedRelayAcknowledgements,"backgroundAudioEnabled":self.backgroundRecordingEnabled,"before":self.relayBefore,"after":self.ledger.lifetime]
                     try JSONSerialization.data(withJSONObject:diagnostics,options:[.prettyPrinted,.sortedKeys]).write(to:self.folder.appendingPathComponent("local-relay-validation.json"),options:.atomic)
                 }catch{self.message="驗證紀錄保存失敗；累計未因此重置。"}
                 self.validating=false;self.relayReady=false;self.relayID=nil;self.applyProcessor()

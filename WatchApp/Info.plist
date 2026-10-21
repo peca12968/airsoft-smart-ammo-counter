@@ -18,5 +18,9 @@
 	<string>org.local.AirsoftSmartAmmo.phone</string>
 	<key>WKRunsIndependentlyOfCompanionApp</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>
