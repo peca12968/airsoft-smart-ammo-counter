@@ -584,13 +584,19 @@ public enum RefinedAcousticTrainer {
         let onset=max(0.0004,noise+max(0.00025,2*deviation),quiet.map(\.rms).sorted()[Int(Double(quiet.count-1)*0.75)]*1.2)
         guard onset<0.9 else{throw TrainingFailure.poorQuality}
         let power=(0..<24).map{band in median(quiet.map{($0.dense?.spectrum[band] ?? 0)*$0.rms*$0.rms})}
+        // Separate clear target transients from small foreground noise excursions.
+        // The inference noise floor stays calibrated from quiet input; this higher
+        // extraction floor only chooses training events and their onset/peak frames.
+        let levels=positive.filter{$0.usable && $0.dense?.valid==true}.map(\.rms).sorted()
+        guard !levels.isEmpty else{throw RefinedTrainingFailure.noDenseFeatures}
+        let eventOnset=max(onset,levels[Int(Double(levels.count-1)*0.95)]*0.15)
         var events=[Event](),active=[AudioSpectrum](),rise=1.0,lastAbove:UInt16=0,previousRMS=noise
         func finish(){if let first=active.first,let last=active.last,last.timestamp &- first.timestamp<=420 {events.append(Event(frames:active,rise:rise))};active=[]}
         for frame in positive where frame.flags & 14 == 0 {
             if !active.isEmpty && frame.timestamp &- lastAbove>100 {finish()}
             defer {previousRMS=frame.rms}
             guard frame.usable,frame.dense?.valid==true else{continue}
-            if frame.rms>=onset {
+            if frame.rms>=eventOnset {
                 if active.isEmpty {rise=frame.rms/max(0.00001,previousRMS)}
                 active.append(frame);lastAbove=frame.timestamp
             }

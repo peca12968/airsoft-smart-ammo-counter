@@ -227,6 +227,19 @@ extension VibrationTrainingTests {
         }
         return try RefinedAcousticTrainer.analyze(background:quiet,positive:target)
     }
+    func testTrainingSelectsMechanicalPeaksInsteadOfLowFrequencyForegroundNoise() throws {
+        let quiet=(0..<60).map{refinedTone(250,0.0004,$0*20)}
+        let capture=(0..<300).map{index in
+            let active=index>=40 && index%50<4
+            return refinedTone(active ? 1250:250,active ? 0.06:0.006,index*20)
+        }
+        let report=try RefinedAcousticTrainer.analyze(background:quiet,positive:capture)
+        XCTAssertEqual(report.events,5)
+        XCTAssertGreaterThan(report.model.scores(refinedTone(1250)).target,0.98)
+        XCTAssertLessThan(report.model.scores(refinedTone(250,0.006)).target,report.model.minimumScore)
+        XCTAssertEqual(report.backgroundRMS,quiet[0].rms,accuracy:0.00001)
+    }
+
     func testRefinedClassifierFindsDifferencesInsideSameOldFrequencyBand() throws {
         let result=try refinedFixture(),target=refinedTone(1250),nearby=refinedTone(1800)
         XCTAssertTrue(result.model.valid);XCTAssertEqual(result.events,4)
