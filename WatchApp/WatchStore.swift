@@ -869,6 +869,12 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     private var ledgerURL:URL {folder.appendingPathComponent("local-counter.json")}
     var remaining:Int {ledger.remaining}
     var total:UInt64 {ledger.total}
+    var relativeLevelText:String {
+        guard let spectrum,let model=refinedReport?.model else{return "相對音量：等待收音"}
+        let current=20*log10(max(0.00001,spectrum.rms)),minimum=20*log10(max(0.00001,model.minimumEventPeakRMS))
+        return String(format:"相對音量 %.0f dBFS · 事件峰值下限 %.0f dBFS",current,minimum)
+    }
+
     override init(){
         folder=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("AirsoftAmmo")
         if let saved=UserDefaults.standard.string(forKey:"local-origin") {origin=saved}else{origin=UUID().uuidString;UserDefaults.standard.set(origin,forKey:"local-origin")}
@@ -916,7 +922,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if ProcessInfo.processInfo.arguments.contains("--local-mic-smoke") {
             Task{@MainActor in
                 await self.start();try? await Task.sleep(nanoseconds:4_000_000_000)
-                let result:[String:Any] = ["build":"primary-feature-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
+                let result:[String:Any] = ["build":"semiauto-level-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
                 if let data=try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),let text=String(data:data,encoding:.utf8){print("AMMO_LOCAL_MIC "+text);fflush(stdout)}
                 self.stop()
             }

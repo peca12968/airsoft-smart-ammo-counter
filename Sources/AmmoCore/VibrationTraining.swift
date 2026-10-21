@@ -471,11 +471,13 @@ public struct RefinedAcousticModel:Codable,Sendable {
     public let prototypeGroups:[Int]?
     public var negatives:[DenseAudioDescriptor]
     public var adaptiveNegatives:[DenseAudioDescriptor]?
+    public let referencePeakRMS:Double?
     public var minimumScore:Double
     public let minimumRise:Double
-    public init(version:Int,base:AudioProfile,noisePower:[Double],prototypes:[DenseAudioDescriptor],negatives:[DenseAudioDescriptor],minimumScore:Double,minimumRise:Double,prototypeGroups:[Int]?=nil,adaptiveNegatives:[DenseAudioDescriptor]?=nil){self.version=version;self.base=base;self.noisePower=noisePower;self.prototypes=prototypes;self.negatives=negatives;self.minimumScore=minimumScore;self.minimumRise=minimumRise;self.prototypeGroups=prototypeGroups;self.adaptiveNegatives=adaptiveNegatives}
+    public init(version:Int,base:AudioProfile,noisePower:[Double],prototypes:[DenseAudioDescriptor],negatives:[DenseAudioDescriptor],minimumScore:Double,minimumRise:Double,prototypeGroups:[Int]?=nil,adaptiveNegatives:[DenseAudioDescriptor]?=nil,referencePeakRMS:Double?=nil){self.referencePeakRMS=referencePeakRMS;self.version=version;self.base=base;self.noisePower=noisePower;self.prototypes=prototypes;self.negatives=negatives;self.minimumScore=minimumScore;self.minimumRise=minimumRise;self.prototypeGroups=prototypeGroups;self.adaptiveNegatives=adaptiveNegatives}
+    public var minimumEventPeakRMS:Double {max(base.onset*2,(referencePeakRMS ?? 0)*0.12)}
     public var allBackground:[DenseAudioDescriptor] {negatives+(adaptiveNegatives ?? [])}
-    public var valid:Bool {version==2 && (try? AudioProfile(data:base.data)) != nil && noisePower.count==24 && noisePower.allSatisfy{$0.isFinite && (0...1).contains($0)} && (3...24).contains(prototypes.count) && prototypes.allSatisfy(\.valid) && (prototypeGroups == nil || (prototypeGroups!.count==prototypes.count && prototypeGroups!.allSatisfy{(0...23).contains($0)})) && negatives.count<=12 && negatives.allSatisfy(\.valid) && (adaptiveNegatives ?? []).count<=8 && (adaptiveNegatives ?? []).allSatisfy(\.valid) && minimumScore.isFinite && (0.65...0.99).contains(minimumScore) && minimumRise.isFinite && (1.1...4).contains(minimumRise)}
+    public var valid:Bool {version==2 && (try? AudioProfile(data:base.data)) != nil && noisePower.count==24 && noisePower.allSatisfy{$0.isFinite && (0...1).contains($0)} && (3...24).contains(prototypes.count) && prototypes.allSatisfy(\.valid) && (prototypeGroups == nil || (prototypeGroups!.count==prototypes.count && prototypeGroups!.allSatisfy{(0...23).contains($0)})) && negatives.count<=12 && negatives.allSatisfy(\.valid) && (adaptiveNegatives ?? []).count<=8 && (adaptiveNegatives ?? []).allSatisfy(\.valid) && (referencePeakRMS == nil || (referencePeakRMS!.isFinite && (0.0001...1).contains(referencePeakRMS!))) && minimumScore.isFinite && (0.65...0.99).contains(minimumScore) && minimumRise.isFinite && (1.1...4).contains(minimumRise)}
     public func cleaned(_ frame:AudioSpectrum)->DenseAudioDescriptor? {
         guard frame.usable,let d=frame.dense,d.valid else{return nil}
         let power=frame.rms*frame.rms
@@ -623,16 +625,17 @@ public enum RefinedAcousticTrainer {
             }
         }
         let rises=retained.map{events[$0].rise}.sorted()
-        model=RefinedAcousticModel(version:2,base:base,noisePower:power,prototypes:prototypes,negatives:[],minimumScore:max(0.80,min(0.92,weakest*0.94)),minimumRise:max(1.15,min(1.6,rises[0]*0.4)),prototypeGroups:groups)
+        model=RefinedAcousticModel(version:2,base:base,noisePower:power,prototypes:prototypes,negatives:[],minimumScore:max(0.80,min(0.92,weakest*0.94)),minimumRise:max(1.15,min(1.6,rises[0]*0.4)),prototypeGroups:groups,referencePeakRMS:median(retained.map{i in events[i].frames.map(\.rms).max() ?? onset}))
         guard model.valid else{throw TrainingFailure.poorQuality}
         return RefinedAcousticReport(model:model,events:retained.count,excludedEvents:events.count-retained.count,crossEventSimilarity:weakest,backgroundRMS:noise)
     }
 }
 public enum AcousticDecision:String,Sendable {
-    case quiet,lowEnergy,weakAttack,differentSpectrum,background,confirming,accepted,cooldown,invalid,sustained
+    case quiet,lowEnergy,weakAttack,differentSpectrum,background,confirming,accepted,cooldown,invalid,sustained,belowRecordedLevel
     public var text:String {switch self {
         case .quiet:return "等待下一次起音"
         case .lowEnergy:return "聲音低於底噪門檻"
+        case .belowRecordedLevel:return "音量低於事件參考門檻"
         case .weakAttack:return "持續聲／起音不符合"
         case .differentSpectrum:return "頻譜或音色不符合"
         case .background:return "符合已排除的背景聲"
@@ -655,6 +658,10 @@ public struct RefinedEventDetector {
     public private(set) var score=0.0
     public init(){}
     public mutating func update(_ frame:AudioSpectrum,time:Double,model:RefinedAcousticModel,needsMotion:Bool=false,motionOK:Bool=true)->Bool {
+        // The matcher may fire on a quiet onset before the mechanical peak.
+        // Track that same event's envelope so its later valley can rearm the gate.
+        if time.isFinite,eventPeak>0,time>=lastAcceptedAt,time-lastAcceptedAt<=0.100001,
+           frame.rms.isFinite,(0...1).contains(frame.rms),(frame.flags==0 || frame.flags==2) {eventPeak=max(eventPeak,frame.rms)}
         guard time.isFinite,frame.flags & 14 == 0 else{decision = .invalid;return false}
         // Digital silence has no spectral shape, but is valid quiet input.
         if frame.rms<model.base.rearm {
@@ -687,14 +694,14 @@ public struct RefinedEventDetector {
         guard match.target>=min(0.98,model.minimumScore+0.035) || support>=2 else{decision = .confirming;return false}
         if needsMotion && !motionOK {pendingMotion=time;pendingPeak=frame.rms;decision = .confirming;return false}
         let hit=gate.update(match:true,quiet:false,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
-        if hit {lastAcceptedAt=time;eventPeak=frame.rms;eventTime=time}
+        if hit {lastAcceptedAt=time;eventPeak=frame.rms;eventTime=candidateAt ?? time}
         pendingMotion=nil;decision=hit ? .accepted:.cooldown;return hit
     }
     public mutating func confirmMotion(time:Double,refractory:Double)->Bool {
         guard let pending=pendingMotion,time>=pending,time-pending<=0.08 else{return false}
         pendingMotion=nil
         let hit=gate.update(match:true,quiet:false,time:time,refractory:refractory)
-        if hit {lastAcceptedAt=time;eventPeak=pendingPeak;eventTime=pending}
+        if hit {lastAcceptedAt=time;eventPeak=pendingPeak;eventTime=candidateAt ?? pending}
         decision=hit ? .accepted:.cooldown;return hit
     }
 }
@@ -721,13 +728,14 @@ public struct LocalAcousticDetector {
             peak=max(peak,frame.rms);decision = .confirming;return false
         }
         guard frame.flags & 14 == 0 else{pendingAt=nil;return false}
-        if candidate {pendingAt=time;peak=frame.rms}
+        if candidate {pendingAt=matcher.eventTime ?? time;peak=frame.rms}
         guard let start=pendingAt else{return false}
         let elapsed=time-start
         if elapsed<0 || elapsed>0.10 {pendingAt=nil;decision = .sustained;return false}
         if matcher.decision == .background {pendingAt=nil;decision = .background;return false}
         peak=max(peak,frame.rms)
         if elapsed>=0.015 && frame.rms<=peak*0.55 {
+            guard peak>=model.minimumEventPeakRMS else{pendingAt=nil;decision = .belowRecordedLevel;return false}
             pendingAt=nil;eventTime=start;decision = .accepted;return true
         }
         decision = .confirming;return false

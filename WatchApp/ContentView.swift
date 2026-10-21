@@ -173,6 +173,7 @@ struct LocalWatchRootView:View {
                     Picker("容量",selection:Binding(get:{store.ledger.capacity},set:{store.setCapacity($0)})){ForEach(AmmoCounter.presets,id:\.self){n in Text("\(n) 發").tag(n)}}
                     Button("重新裝填") {store.reload()}
                     HStack{Button("−1"){store.correct(-1)};Button("＋1"){store.correct(1)}}.buttonStyle(.bordered)
+                    Text(store.relativeLevelText).font(.caption2).foregroundStyle(.secondary)
                     Text(store.dualStatus).font(.caption2).foregroundStyle(.secondary)
                     Text("兩台可同時收音；需手機連線對時與入帳。保持 App 在前景。重置累計請用手機。").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.horizontal,8)

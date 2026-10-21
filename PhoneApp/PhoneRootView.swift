@@ -335,7 +335,7 @@ private struct SignalWaveform: View {
 
 private enum PhoneReleaseInfo {
     // Fixed for this build; this is not the time at which the app was opened.
-    static let updatedAt = "2026/10/21 18:49（台灣時間）"
+    static let updatedAt = "2026/10/21 19:08（台灣時間）"
     static let name = "雙端主特徵版"
 }
 
@@ -428,6 +428,8 @@ struct LocalPhoneSettingsView:View {
                 Button(store.listening ? "停止感測":"僅開啟監聽"){if store.listening{store.stop()}else{Task{await store.start()}}}
                 Text(store.decisionText)
                 Text("頻譜符合程度 \(Int(store.matchScore*100))% · 主峰 \(store.spectrum?.dominantHz ?? 0) Hz")
+                Text(store.relativeLevelText).font(.footnote)
+                Text("裝置相對音量，非校正環境分貝；手機與手錶各自收錄，改變距離後應重做驗證。").font(.footnote).foregroundStyle(.secondary)
                 if let model=store.refinedReport {Text("\(model.events) 個敲擊範本 · \(model.model.negatives.count) 個手動背景")}
                 if let s=store.spectrum {
                     HStack(alignment:.bottom,spacing:4){ForEach(0..<8,id:\.self){i in VStack{Rectangle().fill(.cyan).frame(height:max(2,s.bands[i]*100));Text(AudioSpectrum.bandLabels[i]).font(.system(size:8))}.frame(maxWidth:.infinity)}}.frame(height:100,alignment:.bottom)
