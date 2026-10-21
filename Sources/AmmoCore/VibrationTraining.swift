@@ -674,10 +674,10 @@ public struct RefinedEventDetector {
         let oldRMS=previousRMS,oldScore=previousScore;previousRMS=frame.rms
         let match=model.scores(frame);score=match.target;previousScore=match.target
         let unrelated=match.target<model.minimumScore-0.12
-        let refractory=Double(model.base.refractoryMs)/1000
         // A decayed tabletop resonance need not return to the original noise floor.
-        // Require a deep valley after the refractory period, then a fresh attack.
-        let relativeValley=eventPeak>0 && frame.rms<eventPeak*0.35 && time-lastAcceptedAt>=refractory
+        // Observe the valley during cooldown, so the next attack can be ready as
+        // soon as cooldown ends. LocalTriggerGate still enforces the full interval.
+        let relativeValley=eventPeak>0 && frame.rms<eventPeak*0.35
         let isQuiet=frame.rms<model.base.rearm || unrelated || relativeValley
         _ = gate.update(match:false,quiet:isQuiet,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
         if isQuiet {candidateAt=nil;support=0;spectralAttack=false;pendingMotion=nil;if !relativeValley {eventPeak=0};decision = .quiet;return false}

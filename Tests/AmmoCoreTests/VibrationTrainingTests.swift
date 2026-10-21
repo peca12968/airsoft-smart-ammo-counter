@@ -444,6 +444,32 @@ extension VibrationTrainingTests {
         XCTAssertEqual(hits,5)
     }
 
+    func testValleyDuringCooldownPreparesFiveSeparate110MillisecondEvents() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector(),hits=0
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        for index in 0..<5 {
+            let start=0.08+Double(index)*0.11
+            for (offset,amplitude) in [(0.0,index==0 ? 0.06:0.25),(0.02,0.4),(0.05,0.15),(0.07,0.06),(0.08,0.05),(0.09,0.08),(0.10,0.10)] {
+                let frame=offset==0.02 ? try clippedTone(1250,amplitude):refinedTone(1250,amplitude)
+                if detector.update(frame,time:start+offset,model:model) {hits+=1}
+            }
+        }
+        XCTAssertEqual(hits,5)
+    }
+
+    func testValleyDuringCooldownCannotAuthorizeAnEventBeforeRefractoryEnds() throws {
+        let model=try refinedFixture().model;var detector=RefinedEventDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertTrue(detector.update(refinedTone(1250,0.06),time:0.08,model:model))
+        XCTAssertFalse(detector.update(try clippedTone(),time:0.10,model:model))
+        for time in [0.12,0.13,0.14,0.15] {XCTAssertFalse(detector.update(refinedTone(1250,0.01),time:time,model:model))}
+        XCTAssertFalse(detector.update(refinedTone(1250,0.25),time:0.16,model:model))
+        XCTAssertEqual(detector.decision,.cooldown)
+        XCTAssertEqual(try XCTUnwrap(detector.eventTime),0.08,accuracy:0.00001)
+    }
+
     func testMatchingButQuietSoundCannotCountBelowRecordedPeakReference() throws {
         let model=try refinedFixture().model;var detector=LocalAcousticDetector()
         _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
