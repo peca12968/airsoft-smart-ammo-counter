@@ -43,6 +43,7 @@ public struct LocalAmmoLedger: Codable, Equatable {
     public var resetRevision: UInt64
     public var sensorOwner:String?
     public var sensorRevision:UInt64?
+    public var soundFusion:SoundFusionState?
     public var resetEditor: String
     public init(seed:UInt64=0,capacity:Int=300,remaining:Int=300,editor:String) {
         self.seed=seed;events=[:];self.capacity=capacity;anchorRemaining=min(capacity,max(0,remaining));anchorLifetime=seed;revision=0;self.editor=editor;resetBaseline=0;resetRevision=0;resetEditor=editor
@@ -61,6 +62,7 @@ public struct LocalAmmoLedger: Codable, Equatable {
     public mutating func merge(_ other:Self) {
         guard other.valid else{return}
         if let owner=other.sensorOwner,let version=other.sensorRevision,version>(sensorRevision ?? 0) || (version==(sensorRevision ?? 0) && owner>(sensorOwner ?? "")){sensorOwner=owner;sensorRevision=version}
+        if let incoming=other.soundFusion,incoming.valid,let local=soundFusion,local.owner==incoming.owner,incoming.revision>local.revision {soundFusion=incoming}
         seed=max(seed,other.seed)
         for (origin,count) in other.events {events[origin]=max(events[origin] ?? 0,count)}
         if other.revision>revision || (other.revision==revision && other.editor>editor){capacity=other.capacity;anchorRemaining=other.anchorRemaining;anchorLifetime=other.anchorLifetime;revision=other.revision;editor=other.editor}

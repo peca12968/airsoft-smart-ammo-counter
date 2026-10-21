@@ -416,6 +416,40 @@ extension VibrationTrainingTests {
         XCTAssertEqual(verifiedHits,0)
     }
 
+    func clippedTone(_ hz:Double=1250,_ amplitude:Double=0.4,flags:UInt8=2) throws -> AudioSpectrum {
+        let frame=refinedTone(hz,amplitude)
+        var clipped=try AudioSpectrum(data:AudioSpectrum.data(sequence:frame.sequence,captureID:frame.captureID,rms:frame.rms,bands:frame.bands,dominantHz:frame.dominantHz,timestamp:frame.timestamp,flags:flags))
+        clipped.dense=frame.dense;return clipped
+    }
+
+    func testMatchedOnsetSurvivesBriefClippedPeakAndCountsOnceOnValidDecay() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector(),hits=0
+        for index in 0..<5 {
+            let start=Double(index)*0.8
+            _ = detector.update(refinedTone(250,0.0004),time:start,model:model)
+            _ = detector.update(refinedTone(250,0.0004),time:start+0.04,model:model)
+            XCTAssertFalse(detector.update(refinedTone(1250,0.02),time:start+0.08,model:model))
+            XCTAssertFalse(detector.update(try clippedTone(),time:start+0.10,model:model))
+            XCTAssertFalse(detector.update(try clippedTone(),time:start+0.11,model:model))
+            if detector.update(refinedTone(1250,0.08),time:start+0.13,model:model){hits+=1}
+            XCTAssertFalse(detector.update(refinedTone(1250,0.04),time:start+0.15,model:model))
+        }
+        XCTAssertEqual(hits,5)
+    }
+
+    func testClippingCannotAuthorizeUnmatchedSoundOrExtendConfirmationDeadline() throws {
+        let model=try refinedFixture().model
+        for mode in 0..<4 {
+            var detector=LocalAcousticDetector()
+            _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+            _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+            if mode != 0 {XCTAssertFalse(detector.update(refinedTone(1250,0.02),time:0.08,model:model))}
+            XCTAssertFalse(detector.update(try clippedTone(flags:mode==2 ? 6:2),time:0.10,model:model))
+            if mode==3 {XCTAssertFalse(detector.update(try clippedTone(),time:0.20,model:model))}
+            XCTAssertFalse(detector.update(refinedTone(250,0.0004),time:mode==1 ? 0.21:0.22,model:model))
+        }
+    }
+
     func testShortWeakTapsStillConfirmOnceAfterDecay() throws {
         let model=try refinedFixture().model;var detector=LocalAcousticDetector();var hits=0
         for index in 0..<3 {
