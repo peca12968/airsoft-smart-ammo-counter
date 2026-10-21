@@ -335,7 +335,7 @@ private struct SignalWaveform: View {
 
 private enum PhoneReleaseInfo {
     // Fixed for this build; this is not the time at which the app was opened.
-    static let updatedAt = "2026/10/21 18:33（台灣時間）"
+    static let updatedAt = "2026/10/21 18:49（台灣時間）"
     static let name = "雙端主特徵版"
 }
 
@@ -359,11 +359,11 @@ struct LocalPhoneRootView:View {
                     HStack {
                         Button(primaryTitle) {
                             if store.training || store.validating {store.stop()}
-                            else if store.refinedReport == nil {store.train(includeSpeech:true)}
+                            else if store.refinedReport == nil {store.train()}
                             else {Task{await store.toggleCounting()}}
                         }.buttonStyle(.borderedProminent)
                         if store.refinedReport != nil {
-                            Button("收錄主特徵"){store.train(includeSpeech:true)}.buttonStyle(.bordered).disabled(store.training || store.validating)
+                            Button("收錄主特徵"){store.train()}.buttonStyle(.bordered).disabled(store.training || store.validating)
                         }
                     }.controlSize(.large)
                     Button("重新裝填"){store.reload()}.buttonStyle(.bordered).controlSize(.large)
