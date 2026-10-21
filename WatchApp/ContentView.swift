@@ -147,7 +147,7 @@ struct LocalWatchRootView:View {
                     Text("\(store.remaining)").font(.system(size:64,weight:.semibold,design:.rounded)).monospacedDigit()
                     Text("/ \(store.ledger.capacity)").foregroundStyle(.secondary)
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
-                    Text("上次保存的數值 · 抬腕可操作").font(.caption2).foregroundStyle(.secondary)
+                    Text(store.listening ? "收音中 · 手機操作":"已停止收音 · 手機操作").font(.caption2).foregroundStyle(.secondary)
                 }.foregroundStyle(.white).padding(.horizontal,8)
             } else {
             ScrollView {
@@ -161,7 +161,7 @@ struct LocalWatchRootView:View {
                     Text(store.decisionText).font(.caption2).foregroundStyle(.secondary)
                     Text(store.dualStatus).font(.caption2).foregroundStyle(.secondary)
                     Text("所有操作請用手機。此手錶負責收音與顯示。").font(.caption2).foregroundStyle(.secondary)
-                    Text("手錶收音 · 手機判斷 \n兩端 App 需在前景").font(.caption2).foregroundStyle(.secondary)
+                    Text(store.backgroundRecordingEnabled ? "變暗仍收音 · 手機需開啟 App":"手機需開啟 App · 手錶需喚醒").font(.caption2).foregroundStyle(.secondary)
                     Text("更新 \(LocalAmmoStore.buildLabel)").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.horizontal,8)
             }.navigationTitle("Ammo 雙端")
