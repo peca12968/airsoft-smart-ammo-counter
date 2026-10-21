@@ -335,8 +335,8 @@ private struct SignalWaveform: View {
 
 private enum PhoneReleaseInfo {
     // Fixed for this build; this is not the time at which the app was opened.
-    static let updatedAt = "2026/10/21 17:47（台灣時間）"
-    static let name = "背景學習試用版"
+    static let updatedAt = "2026/10/21 18:10（台灣時間）"
+    static let name = "主特徵偵測版"
 }
 
 struct LocalPhoneRootView:View {
@@ -367,14 +367,14 @@ struct LocalPhoneRootView:View {
                         }
                     }.controlSize(.large)
                     Button("重新裝填"){store.reload()}.buttonStyle(.bordered).controlSize(.large)
-                    Label(store.adaptiveStatus,systemImage:"waveform.path").font(.footnote).foregroundStyle(.secondary)
+                    Label("依收錄的主特徵偵測",systemImage:"waveform.path").font(.footnote).foregroundStyle(.secondary)
                     VStack(alignment:.leading,spacing:6) {
                         Text("聲音與震動").font(.caption).foregroundStyle(.secondary)
                         SignalWaveform(values:store.spectrumWave,color:.cyan,height:70)
                         SignalWaveform(values:store.motionWave,color:.mint,height:70)
                     }.padding().background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:18))
                     Text(store.paired ? "手錶已連線":"計數已保存本機").font(.footnote).foregroundStyle(.secondary)
-                    Text("保持 App 在前景；主特徵固定，僅保守學習背景。數量是推估值。").font(.caption).foregroundStyle(.secondary)
+                    Text("保持 App 在前景；不會自動學習背景。數量是推估值。").font(.caption).foregroundStyle(.secondary)
                     VStack(spacing:4) {
                         Text("版本 \(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "—") · \(PhoneReleaseInfo.name)")
                         Text("更新時間：\(PhoneReleaseInfo.updatedAt)")
@@ -393,10 +393,8 @@ struct LocalPhoneSettingsView:View {
     @State private var capacityText="300"
     var body:some View {
         Form {
-            Section("背景學習") {
-                Toggle("自動學習背景",isOn:$store.adaptiveEnabled)
-                Text("主特徵、手動排除樣本與門檻保持固定；不確定的聲音不自動學習，不保存原始錄音。").font(.footnote).foregroundStyle(.secondary)
-                Button("清除自動學習並暫停"){store.resetAdaptiveBackground()}.disabled(store.training || store.validating)
+            Section("手動排除雜音") {
+                Text("依收錄的主特徵偵測；只有你按下補收才會新增排除範本。").font(.footnote).foregroundStyle(.secondary)
                 Button("補收講話聲（3 秒）"){store.collectBackgroundExamples(speech:true)}.disabled(store.training || store.validating)
                 Button("補收其他背景（3 秒）"){store.collectBackgroundExamples()}.disabled(store.training || store.validating)
             }
@@ -430,7 +428,7 @@ struct LocalPhoneSettingsView:View {
                 Button(store.listening ? "停止感測":"僅開啟監聽"){if store.listening{store.stop()}else{Task{await store.start()}}}
                 Text(store.decisionText)
                 Text("頻譜符合程度 \(Int(store.matchScore*100))% · 主峰 \(store.spectrum?.dominantHz ?? 0) Hz")
-                if let model=store.refinedReport {Text("\(model.events) 個敲擊範本 · \(model.model.negatives.count) 個手動背景 · \(model.model.adaptiveNegatives?.count ?? 0) 個自動背景")}
+                if let model=store.refinedReport {Text("\(model.events) 個敲擊範本 · \(model.model.negatives.count) 個手動背景")}
                 if let s=store.spectrum {
                     HStack(alignment:.bottom,spacing:4){ForEach(0..<8,id:\.self){i in VStack{Rectangle().fill(.cyan).frame(height:max(2,s.bands[i]*100));Text(AudioSpectrum.bandLabels[i]).font(.system(size:8))}.frame(maxWidth:.infinity)}}.frame(height:100,alignment:.bottom)
                 }

@@ -567,6 +567,11 @@ public struct RefinedAcousticReport:Codable,Sendable {
     public let crossEventSimilarity:Double
     public let backgroundRMS:Double
     public init(model:RefinedAcousticModel,events:Int,excludedEvents:Int,crossEventSimilarity:Double,backgroundRMS:Double){self.model=model;self.events=events;self.excludedEvents=excludedEvents;self.crossEventSimilarity=crossEventSimilarity;self.backgroundRMS=backgroundRMS}
+    /// Drop only experimental automatic exclusions when restoring fixed-feature detection.
+    /// Explicitly recorded targets, manual exclusions and calibration remain intact.
+    public func withoutAutomaticBackground()->Self {
+        Self(model:model.removingAdaptiveBackground(),events:events,excludedEvents:excludedEvents,crossEventSimilarity:crossEventSimilarity,backgroundRMS:backgroundRMS)
+    }
     public var legacyReport:AudioTrainingReport {AudioTrainingReport(profile:model.base,events:events,validationSimilarity:crossEventSimilarity,backgroundRMS:backgroundRMS)}
 }
 public enum RefinedAcousticTrainer {
