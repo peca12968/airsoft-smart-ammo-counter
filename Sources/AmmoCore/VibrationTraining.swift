@@ -631,11 +631,12 @@ public enum RefinedAcousticTrainer {
     }
 }
 public enum AcousticDecision:String,Sendable {
-    case quiet,lowEnergy,weakAttack,differentSpectrum,background,confirming,accepted,cooldown,invalid,sustained,belowRecordedLevel
+    case quiet,lowEnergy,weakAttack,differentSpectrum,background,confirming,accepted,cooldown,invalid,sustained,belowRecordedLevel,weakContrast
     public var text:String {switch self {
         case .quiet:return "等待下一次起音"
         case .lowEnergy:return "聲音低於底噪門檻"
         case .belowRecordedLevel:return "音量低於事件參考門檻"
+        case .weakContrast:return "起音對比不足，略過餘響"
         case .weakAttack:return "持續聲／起音不符合"
         case .differentSpectrum:return "頻譜或音色不符合"
         case .background:return "符合已排除的背景聲"
@@ -651,9 +652,14 @@ public struct RefinedEventDetector {
     private var previousRMS=0.0,previousScore=0.0,attack=0.0,candidateAt:Double?,support=0
     private var spectralAttack=false
     private var eventPeak=0.0,lastAcceptedAt:Double = -.infinity
+    private var valleyAttackAt:Double?
+    private var recentSupportedAt:Double?
+    private var candidateAcrossEvents=false
+    private var candidateBaselineRMS=0.0
     private var pendingMotion:Double?
     private var pendingPeak=0.0
     public private(set) var eventTime:Double?
+    public private(set) var eventBaselineRMS=0.0
     public private(set) var decision:AcousticDecision = .quiet
     public private(set) var score=0.0
     public init(){}
@@ -668,40 +674,59 @@ public struct RefinedEventDetector {
             _ = gate.update(match:false,quiet:true,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
             previousRMS=frame.rms;previousScore=0;score=0
             candidateAt=nil;support=0;spectralAttack=false;pendingMotion=nil;eventPeak=0
+            valleyAttackAt=nil;recentSupportedAt=nil;candidateAcrossEvents=false
             decision = .quiet;return false
         }
         guard frame.usable,frame.dense?.valid==true else{decision = .invalid;return false}
         let oldRMS=previousRMS,oldScore=previousScore;previousRMS=frame.rms
         let match=model.scores(frame);score=match.target;previousScore=match.target
+        let acrossEvents=model.supportsAcrossEvents(frame)
+        if frame.rms>=model.base.onset,match.target>=model.minimumScore,acrossEvents,
+           model.allBackground.isEmpty || match.target>match.background+0.025 {recentSupportedAt=time}
         let unrelated=match.target<model.minimumScore-0.12
         // A decayed tabletop resonance need not return to the original noise floor.
         // Observe the valley during cooldown, so the next attack can be ready as
         // soon as cooldown ends. LocalTriggerGate still enforces the full interval.
-        let relativeValley=eventPeak>0 && frame.rms<eventPeak*0.35
+        // A fresh attack can start below the previous event's valley ceiling.
+        // Use the existing rise criterion to distinguish it from decaying sound.
+        let risingAttack=frame.rms>=max(model.base.rearm,oldRMS)*model.minimumRise
+        // Leave the old valley only after it fully armed the gate. Preserve the
+        // rising candidate through adjacent windows, even below the old ceiling.
+        // An unmatched candidate expires so it cannot block later transients.
+        if risingAttack && gate.isArmed && valleyAttackAt==nil {valleyAttackAt=time}
+        let leavingValley=valleyAttackAt.map{time>=$0 && time-$0<=0.10} ?? false
+        let relativeValley=eventPeak>0 && frame.rms<eventPeak*0.35 && !leavingValley
         let isQuiet=frame.rms<model.base.rearm || unrelated || relativeValley
         _ = gate.update(match:false,quiet:isQuiet,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
-        if isQuiet {candidateAt=nil;support=0;spectralAttack=false;pendingMotion=nil;if !relativeValley {eventPeak=0};decision = .quiet;return false}
+        if isQuiet {candidateAt=nil;support=0;spectralAttack=false;pendingMotion=nil;valleyAttackAt=nil;candidateAcrossEvents=false;if !relativeValley {eventPeak=0};decision = .quiet;return false}
         guard frame.rms>=model.base.onset else{decision = .lowEnergy;return false}
-        if candidateAt==nil {candidateAt=time;attack=frame.rms/max(model.base.rearm,oldRMS);support=0;spectralAttack=false}
+        if candidateAt==nil {
+            candidateAt=time;attack=frame.rms/max(model.base.rearm,oldRMS);support=0;spectralAttack=false
+            candidateBaselineRMS=eventPeak>0 ? oldRMS:0
+            // FFT windows overlap: trusted spectrum in the preceding window can
+            // belong to this attack before the envelope clearly rises.
+            candidateAcrossEvents=recentSupportedAt.map{time>=$0 && time-$0<=0.032} ?? false
+        }
         let spectralOnset=oldScore<model.minimumScore-0.10 && match.target>=model.minimumScore+0.015
         spectralAttack = spectralAttack || spectralOnset
         attack=max(attack,frame.rms/max(model.base.rearm,oldRMS))
         guard time-(candidateAt ?? time)<=0.10,(attack>=model.minimumRise || spectralAttack) else{decision = .weakAttack;return false}
         guard match.target>=model.minimumScore else{support=0;decision = .differentSpectrum;return false}
-        guard model.supportsAcrossEvents(frame) else{support=0;decision = .differentSpectrum;return false}
+        candidateAcrossEvents = candidateAcrossEvents || acrossEvents
+        guard candidateAcrossEvents else{support=0;decision = .differentSpectrum;return false}
         guard model.allBackground.isEmpty || match.target>match.background+0.025 else{support=0;decision = .background;return false}
         support+=1
         guard match.target>=min(0.98,model.minimumScore+0.035) || support>=2 else{decision = .confirming;return false}
         if needsMotion && !motionOK {pendingMotion=time;pendingPeak=frame.rms;decision = .confirming;return false}
         let hit=gate.update(match:true,quiet:false,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
-        if hit {lastAcceptedAt=time;eventPeak=frame.rms;eventTime=candidateAt ?? time}
+        if hit {lastAcceptedAt=time;eventPeak=frame.rms;eventTime=candidateAt ?? time;eventBaselineRMS=candidateBaselineRMS;valleyAttackAt=nil}
         pendingMotion=nil;decision=hit ? .accepted:.cooldown;return hit
     }
     public mutating func confirmMotion(time:Double,refractory:Double)->Bool {
         guard let pending=pendingMotion,time>=pending,time-pending<=0.08 else{return false}
         pendingMotion=nil
         let hit=gate.update(match:true,quiet:false,time:time,refractory:refractory)
-        if hit {lastAcceptedAt=time;eventPeak=pendingPeak;eventTime=candidateAt ?? pending}
+        if hit {lastAcceptedAt=time;eventPeak=pendingPeak;eventTime=candidateAt ?? pending;eventBaselineRMS=candidateBaselineRMS;valleyAttackAt=nil}
         decision=hit ? .accepted:.cooldown;return hit
     }
 }
@@ -711,6 +736,9 @@ public struct RefinedEventDetector {
 public struct LocalAcousticDetector {
     private var matcher=RefinedEventDetector()
     private var pendingAt:Double?
+    private var pendingOnset:Double?
+    private var pendingClippedAt:Double?
+    private var pendingBaselineRMS=0.0
     private var peak=0.0
     public private(set) var eventTime:Double?
     public private(set) var decision:AcousticDecision = .quiet
@@ -725,19 +753,32 @@ public struct LocalAcousticDetector {
         // Clipped spectra cannot create or confirm an event; only bridge its
         // envelope inside the existing deadline, then require an unclipped decay.
         if frame.flags == 2,let start=pendingAt,time>=start,time-start<=0.10 {
-            peak=max(peak,frame.rms);decision = .confirming;return false
+            peak=max(peak,frame.rms);pendingClippedAt=time;decision = .confirming;return false
         }
         guard frame.flags & 14 == 0 else{pendingAt=nil;return false}
-        if candidate {pendingAt=matcher.eventTime ?? time;peak=frame.rms}
+        // Qualification can follow the initial rising sound by several windows.
+        // Give that qualified transient its own bounded decay confirmation time;
+        // keep the earlier onset separately for cross-device event pairing.
+        if candidate {pendingAt=time;pendingOnset=matcher.eventTime ?? time;pendingClippedAt=nil;pendingBaselineRMS=matcher.eventBaselineRMS;peak=frame.rms}
         guard let start=pendingAt else{return false}
         let elapsed=time-start
-        if elapsed<0 || elapsed>0.10 {pendingAt=nil;decision = .sustained;return false}
+        // A clipped peak at the deadline needs one following unclipped window to
+        // measure decay. This single grace window is capped; clipping outside the
+        // original deadline cannot keep a candidate alive.
+        let boundaryDecay=pendingClippedAt.map{time>=$0 && time-$0<=0.032 && elapsed<=0.132} ?? false
+        pendingClippedAt=nil
+        if elapsed<0 || (elapsed>0.10 && !boundaryDecay) {pendingAt=nil;decision = .sustained;return false}
         if matcher.decision == .background {pendingAt=nil;decision = .background;return false}
         peak=max(peak,frame.rms)
         if elapsed>=0.015 && frame.rms<=peak*0.55 {
             guard peak>=model.minimumEventPeakRMS else{pendingAt=nil;decision = .belowRecordedLevel;return false}
-            pendingAt=nil;eventTime=start;decision = .accepted;return true
+            // A tiny rebound in the preceding target's tail is not a new attack.
+            // Only apply this local contrast check when leaving a relative valley;
+            // unrelated ambient sound uses the calibrated spectral path as before.
+            guard peak>=pendingBaselineRMS*2 else{pendingAt=nil;decision = .weakContrast;return false}
+            pendingAt=nil;eventTime=pendingOnset ?? start;decision = .accepted;return true
         }
+        if elapsed>0.10 {pendingAt=nil;decision = .sustained;return false}
         decision = .confirming;return false
     }
     public mutating func confirmMotion(time:Double,refractory:Double)->Bool {

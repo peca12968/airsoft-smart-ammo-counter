@@ -335,7 +335,7 @@ private struct SignalWaveform: View {
 
 private enum PhoneReleaseInfo {
     // Fixed for this build; this is not the time at which the app was opened.
-    static let updatedAt = "2026/10/21 19:31（台灣時間）"
+    static let updatedAt = "2026/10/21 20:14（台灣時間）"
     static let name = "雙端主特徵版"
 }
 
