@@ -384,7 +384,7 @@ struct LocalPhoneRootView:View {
                         SignalWaveform(values:store.motionWave,color:.mint,height:70)
                     }.padding().background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:18))
                     Text(store.paired ? "手錶已連線":"計數已保存本機").font(.footnote).foregroundStyle(.secondary)
-                    Text("手機開啟、手錶就緒後自動開始。手錶本機收音與計數，可放下手腕、鎖定手機；設定與同步在手機。切換手機收音時需保持前景。數量為推估值。").font(.caption).foregroundStyle(.secondary)
+                    Text("手機開啟、手錶就緒後自動開始。手錶收音，手機辨識與計數，再回傳顯示；請保持手機 App 在前景。鎖定或連線中斷時會暫停，已確認累計保留。數量為推估值。").font(.caption).foregroundStyle(.secondary)
                     VStack(spacing:4) {
                         Text("版本 \(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "—") · \(PhoneReleaseInfo.name)")
                         Text("更新時間：\(PhoneReleaseInfo.updatedAt)")
