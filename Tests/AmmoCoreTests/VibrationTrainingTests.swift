@@ -282,5 +282,121 @@ extension VibrationTrainingTests {
         XCTAssertFalse(gate.update(distractor,time:0.08,model:restored))
         XCTAssertEqual(gate.decision,.background)
     }
+
+    func testSpectralAttackSurvivesSecondConfirmationFrameOverLouderAmbient() throws {
+        let model=try refinedFixture().model
+        var moderate=refinedTone(1250,0.006)
+        let target=moderate.dense!,other=refinedTone(1800).dense!
+        var found=false
+        for step in 1..<100 {
+            let mix=Double(step)/100
+            moderate.dense=DenseAudioDescriptor(spectrum:zip(target.spectrum,other.spectrum).map{$0*(1-mix)+$1*mix},centroid:target.centroid,flatness:target.flatness,zeroCrossing:target.zeroCrossing,crest:target.crest)
+            let score=model.scores(moderate).target
+            if score>=model.minimumScore+0.016 && score<model.minimumScore+0.034 {found=true;break}
+        }
+        XCTAssertTrue(found,"Fixture must require two confirmation frames")
+        var detector=RefinedEventDetector()
+        _ = detector.update(refinedTone(3000,0.06),time:0,model:model)
+        _ = detector.update(refinedTone(3000,0.06),time:0.04,model:model)
+        XCTAssertFalse(detector.update(moderate,time:0.08,model:model))
+        XCTAssertEqual(detector.decision,.confirming)
+        XCTAssertTrue(detector.update(moderate,time:0.10,model:model))
+        XCTAssertFalse(detector.update(moderate,time:0.12,model:model))
+    }
+
+    func testDistinctTapsCountBeforeTableResonanceReturnsToAbsoluteSilence() throws {
+        let model=try refinedFixture().model;var detector=RefinedEventDetector();var hits=0
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        for (time,amplitude) in [(0.06,0.04),(0.12,0.009),(0.16,0.009),(0.20,0.009),(0.23,0.035),(0.29,0.007),(0.33,0.007),(0.37,0.007),(0.40,0.03)] {
+            let frame=refinedTone(1250,amplitude)
+            XCTAssertGreaterThan(frame.rms,model.base.onset)
+            if detector.update(frame,time:time,model:model){hits+=1}
+        }
+        XCTAssertEqual(hits,3)
+    }
+
+    func testDecayingResonanceAndSustainedTargetToneRemainOneEvent() throws {
+        let model=try refinedFixture().model;var detector=RefinedEventDetector();var hits=0
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        for index in 0..<80 {
+            let amplitude=max(0.008,0.04*exp(-Double(index)*0.15))
+            if detector.update(refinedTone(1250,amplitude),time:0.06+Double(index)*0.02,model:model){hits+=1}
+        }
+        XCTAssertEqual(hits,1)
+    }
+
+    func testAudioWindowsKeepSampleOrderAndSampleClockAcrossUnevenCallbacks() throws {
+        let samples=(0..<96).map{Float($0)}
+        var stream=try XCTUnwrap(AudioWindowStream(sampleRate:16000,size:32))
+        var windows=[AudioAnalysisWindow](),cursor=0
+        for length in [7,19,3,41,26] {
+            let end=cursor+length
+            windows+=stream.append(Array(samples[cursor..<end]),endingAt:1+Double(end)/16000)
+            cursor=end
+        }
+        XCTAssertEqual(windows.count,5)
+        for (index,window) in windows.enumerated() {
+            XCTAssertEqual(window.samples,Array(samples[(index*16)..<(index*16+32)]))
+            XCTAssertEqual(window.endingAt,1+Double(index*16+32)/16000,accuracy:0.0000001)
+        }
+        XCTAssertEqual(stream.discontinuities,0)
+    }
+
+    func testAudioGapAndInvalidSamplesNeverBlendOldAndNewAudio() throws {
+        var stream=try XCTUnwrap(AudioWindowStream(sampleRate:16000,size:32))
+        XCTAssertTrue(stream.append([Float](repeating:1,count:16),endingAt:1).isEmpty)
+        let afterGap=stream.append([Float](repeating:2,count:32),endingAt:2)
+        XCTAssertEqual(afterGap.count,1);XCTAssertTrue(afterGap[0].samples.allSatisfy{$0==2})
+        XCTAssertEqual(stream.discontinuities,1)
+        XCTAssertTrue(stream.append([.nan],endingAt:2.001).isEmpty)
+        XCTAssertEqual(stream.discontinuities,2)
+        let fresh=stream.append([Float](repeating:3,count:32),endingAt:3)
+        XCTAssertEqual(fresh.count,1);XCTAssertTrue(fresh[0].samples.allSatisfy{$0==3})
+    }
+
+    func testOverlappingFFTRecoversShortAttackAcrossOriginalWindowBoundary() throws {
+        let fft=try XCTUnwrap(RealtimeSpectrumAnalyzer(sampleRate:48000))
+        func pulse(center:Int,count:Int)->[Float] {(0..<count).map{i in
+            abs(i-center)<192 ? Float(0.05*sin(2*Double.pi*1250*Double(i-center)/48000)):0
+        }}
+        let reference=try XCTUnwrap(fft.analyze(pulse(center:512,count:1024),timestamp:0))
+        let samples=pulse(center:1024,count:2048)
+        var stream=try XCTUnwrap(AudioWindowStream(sampleRate:48000,size:fft.size))
+        let windows=stream.append(samples,endingAt:1+Double(samples.count)/48000)
+        let centered=try XCTUnwrap(windows.first{$0.samples==pulse(center:512,count:1024)})
+        let recovered=try XCTUnwrap(fft.analyze(centered.samples,timestamp:0))
+        XCTAssertEqual(recovered.dense,reference.dense)
+        XCTAssertEqual(recovered.rms,reference.rms)
+        XCTAssertEqual(windows.count,3)
+        XCTAssertEqual(centered.endingAt,1+1536.0/48000,accuracy:0.0000001)
+    }
+
+    func testDigitalSilenceRearmsForFirstAndNextTap() throws {
+        let fft=try XCTUnwrap(RealtimeSpectrumAnalyzer(sampleRate:48000))
+        let silence=try XCTUnwrap(fft.analyze([Float](repeating:0,count:fft.size),timestamp:0))
+        XCTAssertEqual(silence.rms,0);XCTAssertNil(silence.dense)
+        let model=try refinedFixture().model;var detector=RefinedEventDetector()
+        _ = detector.update(silence,time:0,model:model)
+        _ = detector.update(silence,time:0.04,model:model)
+        XCTAssertTrue(detector.update(refinedTone(1250),time:0.08,model:model))
+        _ = detector.update(silence,time:0.12,model:model)
+        _ = detector.update(silence,time:0.16,model:model)
+        XCTAssertTrue(detector.update(refinedTone(1250),time:0.20,model:model))
+    }
+
+    func testSilentBackgroundIsValidNoiseCalibrationWithoutInventingEvents() throws {
+        func silence(_ timestamp:Int) throws -> AudioSpectrum {
+            try AudioSpectrum(data:AudioSpectrum.data(sequence:0,captureID:1,rms:0,bands:[Double](repeating:0,count:8),dominantHz:0,timestamp:UInt16(timestamp)))
+        }
+        let quiet=try (0..<60).map{try silence($0*20)}
+        let target=try (0..<150).map{index in
+            index>=40 && index%40<3 ? refinedTone(1250,0.04,index*20):try silence(index*20)
+        }
+        let report=try RefinedAcousticTrainer.analyze(background:quiet,positive:target)
+        XCTAssertEqual(report.events,3);XCTAssertTrue(report.model.valid)
+        XCTAssertTrue(report.model.noisePower.allSatisfy{$0==0})
+    }
 }
 #endif

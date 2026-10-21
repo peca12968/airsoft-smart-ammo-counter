@@ -359,6 +359,46 @@ public enum AudioTrainer {
     }
 }
 
+public struct AudioAnalysisWindow {
+    public let samples:[Float]
+    public let endingAt:Double
+}
+
+/// Half-window overlap preserves short attacks that fall on an FFT boundary.
+public struct AudioWindowStream {
+    public let sampleRate:Double
+    public let size:Int
+    public var hopSize:Int {size/2}
+    public private(set) var discontinuities=0
+    private var pending=[Float]()
+    private var startTime:Double?
+    private var expectedEnd:Double?
+    public init?(sampleRate:Double,size:Int) {
+        guard sampleRate.isFinite,(16000...192000).contains(sampleRate),(32...16384).contains(size),size%2==0 else{return nil}
+        self.sampleRate=sampleRate;self.size=size
+    }
+    public mutating func append(_ samples:[Float],endingAt:Double)->[AudioAnalysisWindow] {
+        guard !samples.isEmpty else{return []}
+        guard samples.count<=65536,endingAt.isFinite,samples.allSatisfy(\.isFinite) else {
+            pending=[];startTime=nil;expectedEnd=nil;discontinuities+=1;return []
+        }
+        let duration=Double(samples.count)/sampleRate
+        if let expectedEnd,abs(endingAt-(expectedEnd+duration))>0.15 {
+            pending=[];startTime=nil;self.expectedEnd=nil;discontinuities+=1
+        }
+        if startTime==nil {startTime=endingAt-duration}
+        expectedEnd=(expectedEnd ?? (endingAt-duration))+duration
+        pending.append(contentsOf:samples)
+        var result=[AudioAnalysisWindow](),offset=0
+        while pending.count-offset>=size {
+            result.append(AudioAnalysisWindow(samples:Array(pending[offset..<(offset+size)]),endingAt:startTime!+Double(offset+size)/sampleRate))
+            offset+=hopSize
+        }
+        if offset>0 {pending.removeFirst(offset);startTime!+=Double(offset)/sampleRate}
+        return result
+    }
+}
+
 #if canImport(Accelerate)
 import Accelerate
 public final class RealtimeSpectrumAnalyzer {
@@ -479,22 +519,23 @@ public struct RefinedAcousticReport:Codable,Sendable {
 public enum RefinedAcousticTrainer {
     private struct Event {var frames:[AudioSpectrum];var rise:Double}
     public static func analyze(background:[AudioSpectrum],positive:[AudioSpectrum]) throws -> RefinedAcousticReport {
-        let quiet=background.filter{$0.usable && $0.dense?.valid==true}
+        let quiet=background.filter{$0.flags & 14 == 0 && ($0.dense?.valid==true || ($0.rms==0 && $0.bands.allSatisfy{$0==0}))}
         guard quiet.count>=30 else{throw RefinedTrainingFailure.noDenseFeatures}
         func median(_ x:[Double])->Double {let a=x.sorted();return a[a.count/2]}
         let noise=median(quiet.map(\.rms)),deviation=median(quiet.map{abs($0.rms-noise)})*1.4826
         let onset=max(0.0004,noise+max(0.00025,2*deviation),quiet.map(\.rms).sorted()[Int(Double(quiet.count-1)*0.75)]*1.2)
         guard onset<0.9 else{throw TrainingFailure.poorQuality}
-        let power=(0..<24).map{band in median(quiet.map{$0.dense!.spectrum[band]*$0.rms*$0.rms})}
+        let power=(0..<24).map{band in median(quiet.map{($0.dense?.spectrum[band] ?? 0)*$0.rms*$0.rms})}
         var events=[Event](),active=[AudioSpectrum](),rise=1.0,lastAbove:UInt16=0,previousRMS=noise
         func finish(){if let first=active.first,let last=active.last,last.timestamp &- first.timestamp<=420 {events.append(Event(frames:active,rise:rise))};active=[]}
-        for frame in positive where frame.usable && frame.dense?.valid==true {
+        for frame in positive where frame.flags & 14 == 0 {
             if !active.isEmpty && frame.timestamp &- lastAbove>100 {finish()}
+            defer {previousRMS=frame.rms}
+            guard frame.usable,frame.dense?.valid==true else{continue}
             if frame.rms>=onset {
                 if active.isEmpty {rise=frame.rms/max(0.00001,previousRMS)}
                 active.append(frame);lastAbove=frame.timestamp
             }
-            previousRMS=frame.rms
         }
         finish();guard events.count>=3 else{throw RefinedTrainingFailure.insufficientEvents}
         let raw=events.map{$0.frames.max(by:{$0.rms<$1.rms})!}
@@ -537,35 +578,53 @@ public enum AcousticDecision:String,Sendable {
 public struct RefinedEventDetector {
     private var gate=LocalTriggerGate()
     private var previousRMS=0.0,previousScore=0.0,attack=0.0,candidateAt:Double?,support=0
+    private var spectralAttack=false
+    private var eventPeak=0.0,lastAcceptedAt:Double = -.infinity
     private var pendingMotion:Double?
+    private var pendingPeak=0.0
     public private(set) var decision:AcousticDecision = .quiet
     public private(set) var score=0.0
     public init(){}
     public mutating func update(_ frame:AudioSpectrum,time:Double,model:RefinedAcousticModel,needsMotion:Bool=false,motionOK:Bool=true)->Bool {
-        guard time.isFinite,frame.usable,frame.dense?.valid==true else{decision = .invalid;return false}
+        guard time.isFinite,frame.flags & 14 == 0 else{decision = .invalid;return false}
+        // Digital silence has no spectral shape, but is valid quiet input.
+        if frame.rms<model.base.rearm {
+            _ = gate.update(match:false,quiet:true,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
+            previousRMS=frame.rms;previousScore=0;score=0
+            candidateAt=nil;support=0;spectralAttack=false;pendingMotion=nil;eventPeak=0
+            decision = .quiet;return false
+        }
+        guard frame.usable,frame.dense?.valid==true else{decision = .invalid;return false}
         let oldRMS=previousRMS,oldScore=previousScore;previousRMS=frame.rms
         let match=model.scores(frame);score=match.target;previousScore=match.target
         let unrelated=match.target<model.minimumScore-0.12
-        let isQuiet=frame.rms<model.base.rearm || unrelated
+        let refractory=Double(model.base.refractoryMs)/1000
+        // A decayed tabletop resonance need not return to the original noise floor.
+        // Require a deep valley after the refractory period, then a fresh attack.
+        let relativeValley=eventPeak>0 && frame.rms<eventPeak*0.35 && time-lastAcceptedAt>=refractory
+        let isQuiet=frame.rms<model.base.rearm || unrelated || relativeValley
         _ = gate.update(match:false,quiet:isQuiet,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
-        if isQuiet {candidateAt=nil;support=0;pendingMotion=nil;decision = .quiet;return false}
+        if isQuiet {candidateAt=nil;support=0;spectralAttack=false;pendingMotion=nil;if !relativeValley {eventPeak=0};decision = .quiet;return false}
         guard frame.rms>=model.base.onset else{decision = .lowEnergy;return false}
-        if candidateAt==nil {candidateAt=time;attack=frame.rms/max(model.base.rearm,oldRMS);support=0}
+        if candidateAt==nil {candidateAt=time;attack=frame.rms/max(model.base.rearm,oldRMS);support=0;spectralAttack=false}
         let spectralOnset=oldScore<model.minimumScore-0.10 && match.target>=model.minimumScore+0.015
+        spectralAttack = spectralAttack || spectralOnset
         attack=max(attack,frame.rms/max(model.base.rearm,oldRMS))
-        guard time-(candidateAt ?? time)<=0.10,(attack>=model.minimumRise || spectralOnset) else{decision = .weakAttack;return false}
+        guard time-(candidateAt ?? time)<=0.10,(attack>=model.minimumRise || spectralAttack) else{decision = .weakAttack;return false}
         guard match.target>=model.minimumScore else{support=0;decision = .differentSpectrum;return false}
         guard model.negatives.isEmpty || match.target>match.background+0.025 else{support=0;decision = .background;return false}
         support+=1
         guard match.target>=min(0.98,model.minimumScore+0.035) || support>=2 else{decision = .confirming;return false}
-        if needsMotion && !motionOK {pendingMotion=time;decision = .confirming;return false}
+        if needsMotion && !motionOK {pendingMotion=time;pendingPeak=frame.rms;decision = .confirming;return false}
         let hit=gate.update(match:true,quiet:false,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
+        if hit {lastAcceptedAt=time;eventPeak=frame.rms}
         pendingMotion=nil;decision=hit ? .accepted:.cooldown;return hit
     }
     public mutating func confirmMotion(time:Double,refractory:Double)->Bool {
         guard let pending=pendingMotion,time>=pending,time-pending<=0.08 else{return false}
         pendingMotion=nil
         let hit=gate.update(match:true,quiet:false,time:time,refractory:refractory)
+        if hit {lastAcceptedAt=time;eventPeak=pendingPeak}
         decision=hit ? .accepted:.cooldown;return hit
     }
 }
