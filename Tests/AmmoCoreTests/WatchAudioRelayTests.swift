@@ -2,6 +2,25 @@ import XCTest
 @testable import AmmoCore
 
 extension VibrationTrainingTests {
+    func testLostAcknowledgementsDoNotDuplicatePersistedLedgerEvents() throws {
+        let (session,frames)=try relayFixture()
+        var receiver=try XCTUnwrap(WatchAudioReceiver(session:session))
+        var ledger=LocalAmmoLedger(editor:"phone"),sequence:UInt64=0
+        for offset in stride(from:0,to:frames.count,by:24) {
+            let batch=WatchAudioBatch(id:session.id,sequence:sequence,frames:Array(frames[offset..<min(offset+24,frames.count)]),finished:offset+24>=frames.count)
+            // Phone persisted the first delivery but the reply was lost.
+            let original=try receiver.accept(batch)
+            for _ in 0..<original.newHits {ledger.event(origin:"phone")}
+            for _ in 0..<3 {
+                let retry=try receiver.accept(batch)
+                XCTAssertEqual(retry.newHits,0)
+                XCTAssertEqual(retry.totalHits,original.totalHits)
+                XCTAssertEqual(retry.finished,original.finished)
+            }
+            sequence+=1
+        }
+        XCTAssertEqual(ledger.total,5);XCTAssertEqual(ledger.remaining,295)
+    }
     func relayFixture() throws -> (WatchAudioStart,[WatchAudioFrame]) {
         let model=try refinedFixture().model
         let session=WatchAudioStart(model:model,settings:LocalDetectionSettings(similarity:model.minimumScore),validation:true)
