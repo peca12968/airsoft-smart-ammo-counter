@@ -59,6 +59,17 @@ public struct LocalAmmoLedger: Codable, Equatable {
     public mutating func setCapacity(_ value:Int,origin:String){guard (1...9999).contains(value) else{return};let left=remaining;revise(origin:origin);capacity=value;anchorRemaining=min(value,left);anchorLifetime=lifetime}
     public mutating func resetFromPhone(origin:String){resetBaseline=lifetime;resetRevision=max(resetRevision,revision);if resetRevision<UInt64.max {resetRevision+=1};resetEditor=origin}
     public mutating func claimSensor(origin:String){sensorOwner=origin;let current=max(sensorRevision ?? 0,max(revision,resetRevision));sensorRevision=current<UInt64.max ? current+1:current}
+    /// A new watch adopts the phone's magazine/reset metadata before publishing
+    /// its own state. Preserve all monotonic events and the watch's local outbox.
+    public mutating func adoptPhoneSnapshot(_ phone:Self) {
+        guard phone.valid else{return}
+        let localFusion=soundFusion
+        merge(phone)
+        capacity=phone.capacity;anchorRemaining=phone.anchorRemaining;anchorLifetime=phone.anchorLifetime
+        revision=phone.revision;editor=phone.editor
+        resetBaseline=phone.resetBaseline;resetRevision=phone.resetRevision;resetEditor=phone.resetEditor
+        sensorOwner=phone.sensorOwner;sensorRevision=phone.sensorRevision;soundFusion=localFusion
+    }
     public mutating func merge(_ other:Self) {
         guard other.valid else{return}
         if let owner=other.sensorOwner,let version=other.sensorRevision,version>(sensorRevision ?? 0) || (version==(sensorRevision ?? 0) && owner>(sensorOwner ?? "")){sensorOwner=owner;sensorRevision=version}

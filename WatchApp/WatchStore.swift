@@ -862,6 +862,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     private var clockBusy=false
     private var sendingSounds=false
     private var dualPeer=false
+    private var awaitingPhoneSnapshot=false
 
     private var refinedURL:URL {folder.appendingPathComponent("local-acoustic-v2.json")}
     private var modelURL:URL {folder.appendingPathComponent("local-audio-model.json")}
@@ -882,6 +883,9 @@ private final class LocalAudioProcessor: @unchecked Sendable {
             migrated.resetBaseline=UInt64(old?.resetStatus?.baseline ?? 0);ledger=migrated
         }
         super.init()
+        #if os(watchOS)
+        awaitingPhoneSnapshot = !UserDefaults.standard.bool(forKey:"watch-phone-snapshot-v1")
+        #endif
         if ledger.soundFusion==nil {ledger.soundFusion=SoundFusionState(owner:origin)}
         UserDefaults.standard.set(false,forKey:"adaptive-background-enabled")
         #if DEBUG
@@ -1123,6 +1127,9 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         return ["localLedger":data,"soundVersion":1]
     }
     private func sync(){
+        #if os(watchOS)
+        guard !awaitingPhoneSnapshot else{return}
+        #endif
         guard let session,session.activationState == .activated else{return}
         let payload=wirePayload();try? session.updateApplicationContext(payload)
         if session.isReachable {session.sendMessage(payload,replyHandler:nil,errorHandler:nil)}
@@ -1131,7 +1138,16 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if payload["soundVersion"] as? Int == 1 {dualPeer=true}
         if payload["pauseSensor"] as? Bool == true {armed=false;applyProcessor();detail="另一端正在收錄或驗證，本機計數已暫停。"}
         guard let data=payload["localLedger"] as? Data,let incoming=try? JSONDecoder().decode(LocalAmmoLedger.self,from:data),incoming.valid else{return}
-        let old=ledger;ledger.merge(incoming)
+        let old=ledger
+        #if os(watchOS)
+        if awaitingPhoneSnapshot {
+            ledger.adoptPhoneSnapshot(incoming)
+            guard persist() else{ledger=old;return}
+            awaitingPhoneSnapshot=false;UserDefaults.standard.set(true,forKey:"watch-phone-snapshot-v1")
+        }else{ledger.merge(incoming)}
+        #else
+        ledger.merge(incoming)
+        #endif
         if !dualPeer && ledger.sensorOwner != nil && ledger.sensorOwner != origin && armed {armed=false;applyProcessor();detail="另一台舊版裝置已接管感測；雙端功能需兩台都更新。"}
         if ledger != old {persist();sync()}
         #if os(iOS)

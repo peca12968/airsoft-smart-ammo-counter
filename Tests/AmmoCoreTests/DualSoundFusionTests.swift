@@ -45,6 +45,25 @@ final class DualSoundFusionTests:XCTestCase {
         older.correct(-1,origin:"phone");XCTAssertEqual(older.total,280)
         older.resetFromPhone(origin:"phone");XCTAssertEqual(older.total,0)
     }
+    func testNewWatchAdoptsPhoneMagazineBeforePublishingItsEmptySnapshot() {
+        var phone=LocalAmmoLedger(seed:329,capacity:150,remaining:91,editor:"A-phone")
+        phone.soundFusion=SoundFusionState(owner:"A-phone")
+        var watch=LocalAmmoLedger(editor:"Z-watch");watch.soundFusion=SoundFusionState(owner:"Z-watch")
+        watch.adoptPhoneSnapshot(phone)
+        XCTAssertEqual(watch.total,329);XCTAssertEqual(watch.capacity,150);XCTAssertEqual(watch.remaining,91)
+        XCTAssertEqual(watch.soundFusion?.owner,"Z-watch")
+        phone.merge(watch)
+        XCTAssertEqual(phone.total,329);XCTAssertEqual(phone.remaining,91)
+        XCTAssertEqual(phone.soundFusion?.owner,"A-phone")
+    }
+    func testPhoneBootstrapPreservesExistingMonotonicWatchEvents() {
+        var phone=LocalAmmoLedger(seed:300,remaining:80,editor:"phone")
+        phone.resetFromPhone(origin:"phone")
+        var watch=LocalAmmoLedger(editor:"watch");watch.event(origin:"watch")
+        watch.adoptPhoneSnapshot(phone)
+        XCTAssertEqual(watch.lifetime,301);XCTAssertEqual(watch.total,1);XCTAssertEqual(watch.remaining,79)
+    }
+
     func testLegacyLedgerLoadsWithoutChangingCumulativeCount() throws {
         var ledger=LocalAmmoLedger(seed:279,editor:"phone");ledger.event(origin:"phone")
         var json=try XCTUnwrap(JSONSerialization.jsonObject(with:JSONEncoder().encode(ledger)) as? [String:Any])
