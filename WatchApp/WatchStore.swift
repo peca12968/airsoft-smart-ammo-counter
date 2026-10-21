@@ -1005,7 +1005,8 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     private func accept(_ frame:AudioSpectrum,peak:Double,block:Double,motionCount:Int){
         guard listening else{return}
         maximumAnalysisMS=max(maximumAnalysisMS,block)
-        if validating && validationFrames.count<600 {validationFrames.append(frame)}
+        // 8 seconds at roughly 94 windows/second exceeds the old 600-frame cap.
+        if validating && validationFrames.count<1024 {validationFrames.append(frame)}
         if trainingPhase==1 {quietFrames.append(frame)}else if trainingPhase==2 {targetFrames.append(frame);collectedMotion.append(peak)}
         if Date().timeIntervalSince(lastPaint)>0.06 {lastPaint=Date();spectrum=frame;motionG=peak;motionSamples=motionCount;spectrumWave=Array((spectrumWave+[frame.rms]).suffix(80));motionWave=Array((motionWave+[peak]).suffix(80))}
     }
