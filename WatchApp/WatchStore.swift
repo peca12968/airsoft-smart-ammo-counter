@@ -759,7 +759,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     var motionThreshold=0.015
     var armed=false
     private var gate=LocalTriggerGate()
-    private var pending=[Float]()
+    private var windows:AudioWindowStream?
     private var analyzer:RealtimeSpectrumAnalyzer?
     private var motionFrames=0
     private var motionPeak=0.0,motionAt=0.0
@@ -771,7 +771,12 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         wake=DispatchSource.makeUserDataAddSource(queue:queue)
         wake.setEventHandler{[weak self] in self?.drain()};wake.resume()
     }
-    func configure(rate:Double){queue.async {self.analyzer=RealtimeSpectrumAnalyzer(sampleRate:rate);self.pending=[];self.gate=LocalTriggerGate();self.refinedDetector=RefinedEventDetector()}}
+    func configure(rate:Double){queue.async {
+        self.ringLock.lock();self.ringRead=0;self.ringWrite=0;self.ringLock.unlock()
+        self.analyzer=RealtimeSpectrumAnalyzer(sampleRate:rate)
+        self.windows=self.analyzer.flatMap{AudioWindowStream(sampleRate:rate,size:$0.size)}
+        self.gate=LocalTriggerGate();self.refinedDetector=RefinedEventDetector()
+    }}
     // Called by the audio IO thread: bounded copy, never waits on a lock or runs FFT.
     func ingest(_ pointer:UnsafePointer<Float>,count:Int,stride:Int){
         guard ringLock.try() else{return}
@@ -781,9 +786,11 @@ private final class LocalAudioProcessor: @unchecked Sendable {
     private func drain(){
         ringLock.lock();var chunk=[Float]();chunk.reserveCapacity((ringWrite-ringRead+ring.count)%ring.count)
         while ringRead != ringWrite {chunk.append(ring[ringRead]);ringRead=(ringRead+1)%ring.count};ringLock.unlock()
-        pending.append(contentsOf:chunk)
-        guard let analyzer else{return}
-        while pending.count>=analyzer.size {let frame=Array(pending.prefix(analyzer.size));pending.removeFirst(analyzer.size);process(frame)}
+        guard !chunk.isEmpty,windows != nil else{return}
+        let previousGaps=windows!.discontinuities
+        let frames=windows!.append(chunk,endingAt:ProcessInfo.processInfo.systemUptime)
+        if windows!.discontinuities != previousGaps {gate=LocalTriggerGate();refinedDetector=RefinedEventDetector()}
+        for frame in frames {process(frame.samples,time:frame.endingAt)}
     }
     func motion(_ peak:Double,time:Double){queue.async {
         self.motionFrames+=1
@@ -791,11 +798,11 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if self.armed && self.triggerMode==1,let model=self.refined,peak>=self.motionThreshold,self.refinedDetector.confirmMotion(time:time,refractory:Double(model.base.refractoryMs)/1000){self.onShot?()}
         if self.armed && self.triggerMode==2 && self.gate.update(match:peak>=self.motionThreshold,quiet:peak<self.motionThreshold*0.45,time:time){self.onShot?()}
     }}
-    private func process(_ samples:[Float]) {
-        let now=ProcessInfo.processInfo.systemUptime
+    private func process(_ samples:[Float],time now:Double) {
+        let analysisStarted=ProcessInfo.processInfo.systemUptime
         guard let analyzer,let spectrum=analyzer.analyze(samples,timestamp:UInt16(truncatingIfNeeded:UInt64(now*1000))) else{return}
-        let movement=now-motionAt<0.15 ? motionPeak:0
-        onFrame?(spectrum,movement,(ProcessInfo.processInfo.systemUptime-now)*1000,motionFrames)
+        let movement=abs(now-motionAt)<0.15 ? motionPeak:0
+        onFrame?(spectrum,movement,(ProcessInfo.processInfo.systemUptime-analysisStarted)*1000,motionFrames)
         guard armed,triggerMode != 2,let profile else{return}
         if let model=refined {
             let hit=refinedDetector.update(spectrum,time:now,model:model,needsMotion:triggerMode==1,motionOK:movement>=motionThreshold)
@@ -888,7 +895,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         if ProcessInfo.processInfo.arguments.contains("--local-mic-smoke") {
             Task{@MainActor in
                 await self.start();try? await Task.sleep(nanoseconds:4_000_000_000)
-                let result:[String:Any] = ["listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
+                let result:[String:Any] = ["build":"tap-recall-20261021","listening":self.listening,"spectrumFrames":self.spectrumWave.count,"dominantHz":self.spectrum?.dominantHz ?? 0,"motionAvailable":self.motion.isDeviceMotionAvailable,"motionSamples":self.motionSamples,"pairedReachable":self.paired,"total":self.total,"lifetime":self.ledger.lifetime,"maximumRMS":self.spectrumWave.max() ?? 0,"denseFeaturesValid":self.spectrum?.dense?.valid ?? false,"maximumFFTAnalysisMS":self.maximumAnalysisMS,"refinedModelLoaded":self.refinedReport?.model.valid ?? false]
                 if let data=try? JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),let text=String(data:data,encoding:.utf8){print("AMMO_LOCAL_MIC "+text);fflush(stdout)}
                 self.stop()
             }
@@ -969,7 +976,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
                 try saveRefinedReport()
                 let peaks=collectedMotion.filter{$0>0.001}.sorted();if !peaks.isEmpty {motionThreshold=max(0.003,min(0.2,peaks[Int(Double(peaks.count-1)*0.9)]*0.5))}
                 try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true);try JSONEncoder().encode(result).write(to:modelURL,options:.atomic)
-                phase="精細特徵已保存";detail="已保留 \(result.events) 次敲擊範本，排除 \(improved.excludedEvents) 次離群樣本。按「啟用計數」後測試。";training=false;applyProcessor()
+                phase="精細特徵已保存";detail="已保留 \(result.events) 次敲擊範本，排除 \(improved.excludedEvents) 次離群樣本。先按「試敲 5 次」確認，再啟用計數。";training=false;applyProcessor()
             }catch{if Task.isCancelled {return};training=false;trainingPhase=0;phase="請重新收錄";detail=trainingErrorText(error);applyProcessor()}
         }
     }
@@ -1006,7 +1013,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
         }
     }
     func validateFiveTaps(){
-        guard !training,!validating,refinedReport != nil else {message="請先收錄新版精細特徵。";return}
+        guard !training,!validating,let modelID=refinedReport?.model.base.id else {message="請先收錄新版精細特徵。";return}
         task=Task{@MainActor in
             if !listening {await start()};guard listening else{return}
             armed=false;validating=true;validationHits=0;validationFrames=[]
@@ -1017,7 +1024,7 @@ private final class LocalAudioProcessor: @unchecked Sendable {
                 try await Task.sleep(nanoseconds:8_000_000_000);guard !Task.isCancelled else{return}
                 validating=false;applyProcessor();phase="驗證收到 \(validationHits)／5 次"
                 detail="請確認你實際敲了 5 次。若少於 5，降低符合門檻或補收同位置的敲擊樣本。累計未因驗證增加。"
-                let result=LocalAcousticValidation(modelID:refinedReport!.model.base.id,expected:5,detected:validationHits,lifetimeBefore:before,lifetimeAfter:ledger.lifetime,frames:validationFrames)
+                let result=LocalAcousticValidation(modelID:modelID,expected:5,detected:validationHits,lifetimeBefore:before,lifetimeAfter:ledger.lifetime,frames:validationFrames)
                 let url=folder.appendingPathComponent("local-validation-"+String(Int(Date().timeIntervalSince1970))+".json")
                 try JSONEncoder().encode(result).write(to:url,options:.atomic);validationURL=url
             }catch{if Task.isCancelled{return};validating=false;applyProcessor();message="驗證紀錄保存失敗；累計仍保留。"}

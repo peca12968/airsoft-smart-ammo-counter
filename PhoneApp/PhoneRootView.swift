@@ -353,7 +353,7 @@ struct LocalPhoneRootView:View {
                         Button(store.listening ? "停止感測":"開始監聽") {if store.listening {store.stop()}else{Task{await store.start()}}}.buttonStyle(.bordered)
                         Button(store.armed ? "暫停計數":"啟用計數") {store.toggleArmed()}.buttonStyle(.borderedProminent).disabled(!store.listening || store.training || store.validating)
                     }.controlSize(.large)
-                    Button(store.training ? "收錄中…":"收錄聲音與震動特徵") {store.train()}.buttonStyle(.borderedProminent).disabled(store.training)
+                    Button(store.training ? "收錄中…":"收錄聲音與震動特徵") {store.train()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
                     if let model=store.refinedReport {
                         Button(store.validating ? "驗證已收到 \(store.validationHits)／5 次":"試敲 5 次（不計入累計）") {store.validateFiveTaps()}.buttonStyle(.borderedProminent).disabled(store.training || store.validating)
                         if let url=store.validationURL {ShareLink("匯出驗證特徵紀錄",item:url)}
@@ -362,17 +362,17 @@ struct LocalPhoneRootView:View {
                     } else {Text("重新收錄一次，可啟用精細特徵比對。").font(.caption).foregroundStyle(.orange)}
                     Picker("觸發條件",selection:$store.triggerMode) {
                         Text("聲音頻譜").tag(0);Text("聲音＋震動").tag(1);Text("震動").tag(2)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).disabled(store.training || store.validating)
                     if store.triggerMode != 2 {
                         VStack(alignment:.leading) {
                             Text("頻譜相似度 \(Int(store.similarity*100))% · 越高越嚴格")
-                            Slider(value:$store.similarity,in:0.65...0.98,step:0.01)
+                            Slider(value:$store.similarity,in:0.65...0.98,step:0.01).disabled(store.training || store.validating)
                         }
                     }
                     if store.triggerMode != 0 {
                         VStack(alignment:.leading) {
                             Text("震動門檻 \(String(format:"%.3fg",store.motionThreshold))")
-                            Slider(value:$store.motionThreshold,in:0.003...0.2,step:0.001)
+                            Slider(value:$store.motionThreshold,in:0.003...0.2,step:0.001).disabled(store.training || store.validating)
                         }
                     }
                     VStack(alignment:.leading,spacing:10) {
@@ -396,7 +396,7 @@ struct LocalPhoneRootView:View {
                         TextField("自訂容量 1–9999",text:$capacityText).keyboardType(.numberPad).textFieldStyle(.roundedBorder)
                         Button("套用") {if let value=Int(capacityText),(1...9999).contains(value){store.setCapacity(value)}}
                     }
-                    Button("手動記一發") {store.demoShot()}.buttonStyle(.bordered)
+                    Button("手動記一發") {store.demoShot()}.buttonStyle(.bordered).disabled(store.training || store.validating)
                     Button("重置累計擊發",role:.destructive) {resetPrompt=true}.buttonStyle(.bordered)
                     Text(store.paired ? "手錶同步已連線":"手錶未即時連線；計數已保存本機").font(.footnote).foregroundStyle(.secondary)
                     Text("一次只在其中一台啟用感測。App 保持前景時分析；原始錄音不存檔。數量是推估值，相似聲音可能誤判。").font(.footnote).foregroundStyle(.secondary)
