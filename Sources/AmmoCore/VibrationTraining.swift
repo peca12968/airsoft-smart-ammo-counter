@@ -644,6 +644,7 @@ public struct RefinedEventDetector {
     private var eventPeak=0.0,lastAcceptedAt:Double = -.infinity
     private var pendingMotion:Double?
     private var pendingPeak=0.0
+    public private(set) var eventTime:Double?
     public private(set) var decision:AcousticDecision = .quiet
     public private(set) var score=0.0
     public init(){}
@@ -680,14 +681,14 @@ public struct RefinedEventDetector {
         guard match.target>=min(0.98,model.minimumScore+0.035) || support>=2 else{decision = .confirming;return false}
         if needsMotion && !motionOK {pendingMotion=time;pendingPeak=frame.rms;decision = .confirming;return false}
         let hit=gate.update(match:true,quiet:false,time:time,refractory:Double(model.base.refractoryMs)/1000,quietDuration:0.025)
-        if hit {lastAcceptedAt=time;eventPeak=frame.rms}
+        if hit {lastAcceptedAt=time;eventPeak=frame.rms;eventTime=time}
         pendingMotion=nil;decision=hit ? .accepted:.cooldown;return hit
     }
     public mutating func confirmMotion(time:Double,refractory:Double)->Bool {
         guard let pending=pendingMotion,time>=pending,time-pending<=0.08 else{return false}
         pendingMotion=nil
         let hit=gate.update(match:true,quiet:false,time:time,refractory:refractory)
-        if hit {lastAcceptedAt=time;eventPeak=pendingPeak}
+        if hit {lastAcceptedAt=time;eventPeak=pendingPeak;eventTime=pending}
         decision=hit ? .accepted:.cooldown;return hit
     }
 }
@@ -698,14 +699,22 @@ public struct LocalAcousticDetector {
     private var matcher=RefinedEventDetector()
     private var pendingAt:Double?
     private var peak=0.0
+    public private(set) var eventTime:Double?
     public private(set) var decision:AcousticDecision = .quiet
     public private(set) var score=0.0
     public init(){}
     public mutating func update(_ frame:AudioSpectrum,time:Double,model:RefinedAcousticModel,needsMotion:Bool=false,motionOK:Bool=true)->Bool {
         let candidate=matcher.update(frame,time:time,model:model,needsMotion:needsMotion,motionOK:motionOK)
         score=matcher.score;decision=matcher.decision
-        if needsMotion {pendingAt=nil;return candidate}
-        guard time.isFinite,frame.flags & 14 == 0 else{pendingAt=nil;return false}
+        if needsMotion {pendingAt=nil;if candidate {eventTime=matcher.eventTime};return candidate}
+        guard time.isFinite,frame.rms.isFinite,(0...1).contains(frame.rms) else{pendingAt=nil;return false}
+        // A valid matching onset can precede a briefly clipped microphone peak.
+        // Clipped spectra cannot create or confirm an event; only bridge its
+        // envelope inside the existing deadline, then require an unclipped decay.
+        if frame.flags == 2,let start=pendingAt,time>=start,time-start<=0.10 {
+            peak=max(peak,frame.rms);decision = .confirming;return false
+        }
+        guard frame.flags & 14 == 0 else{pendingAt=nil;return false}
         if candidate {pendingAt=time;peak=frame.rms}
         guard let start=pendingAt else{return false}
         let elapsed=time-start
@@ -713,12 +722,13 @@ public struct LocalAcousticDetector {
         if matcher.decision == .background {pendingAt=nil;decision = .background;return false}
         peak=max(peak,frame.rms)
         if elapsed>=0.015 && frame.rms<=peak*0.55 {
-            pendingAt=nil;decision = .accepted;return true
+            pendingAt=nil;eventTime=start;decision = .accepted;return true
         }
         decision = .confirming;return false
     }
     public mutating func confirmMotion(time:Double,refractory:Double)->Bool {
         let hit=matcher.confirmMotion(time:time,refractory:refractory)
+        if hit {eventTime=matcher.eventTime}
         decision=matcher.decision;return hit
     }
 }

@@ -335,8 +335,8 @@ private struct SignalWaveform: View {
 
 private enum PhoneReleaseInfo {
     // Fixed for this build; this is not the time at which the app was opened.
-    static let updatedAt = "2026/10/21 18:10（台灣時間）"
-    static let name = "主特徵偵測版"
+    static let updatedAt = "2026/10/21 18:33（台灣時間）"
+    static let name = "雙端主特徵版"
 }
 
 struct LocalPhoneRootView:View {
@@ -367,7 +367,7 @@ struct LocalPhoneRootView:View {
                         }
                     }.controlSize(.large)
                     Button("重新裝填"){store.reload()}.buttonStyle(.bordered).controlSize(.large)
-                    Label("依收錄的主特徵偵測",systemImage:"waveform.path").font(.footnote).foregroundStyle(.secondary)
+                    Label(store.dualStatus,systemImage:"waveform.path").font(.footnote).foregroundStyle(.secondary)
                     VStack(alignment:.leading,spacing:6) {
                         Text("聲音與震動").font(.caption).foregroundStyle(.secondary)
                         SignalWaveform(values:store.spectrumWave,color:.cyan,height:70)
@@ -433,7 +433,7 @@ struct LocalPhoneSettingsView:View {
                     HStack(alignment:.bottom,spacing:4){ForEach(0..<8,id:\.self){i in VStack{Rectangle().fill(.cyan).frame(height:max(2,s.bands[i]*100));Text(AudioSpectrum.bandLabels[i]).font(.system(size:8))}.frame(maxWidth:.infinity)}}.frame(height:100,alignment:.bottom)
                 }
                 Text(store.paired ? "手錶即時連線中":"手錶未即時連線；資料已保存本機")
-                Text("一次只在一台啟用感測；相似聲音仍可能誤判，驗證不等於真實擊發準確率。").font(.footnote).foregroundStyle(.secondary)
+                Text("兩台各自收錄特徵並開始；手錶事件由手機統一配對入帳。相似聲音仍可能誤判。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("更多")
         .confirmationDialog("確定重置累計擊發？",isPresented:$resetPrompt,titleVisibility:.visible){Button("確認重置為 0",role:.destructive){store.resetTotal()}}
