@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "byteOrder": "little-endian",
+  "service": "7A6B1000-5C29-4B87-9E31-41AC08D2E640",
+  "characteristics": {
+    "identity": {
+      "uuid": "7A6B1001-5C29-4B87-9E31-41AC08D2E640",
+      "length": 9,
+      "properties": [
+        "read"
+      ]
+    },
+    "state": {
+      "uuid": "7A6B1002-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ]
+    },
+    "command": {
+      "uuid": "7A6B1003-5C29-4B87-9E31-41AC08D2E640",
+      "length": 16,
+      "properties": [
+        "write-with-response"
+      ]
+    },
+    "ack": {
+      "uuid": "7A6B1004-5C29-4B87-9E31-41AC08D2E640",
+      "length": 14,
+      "properties": [
+        "read",
+        "notify"
+      ]
+    },
+    "safety": {
+      "uuid": "7A6B1005-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "trainingControl": {
+      "uuid": "7A6B1006-5C29-4B87-9E31-41AC08D2E640",
+      "length": 16,
+      "properties": [
+        "write-with-response"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "trainingData": {
+      "uuid": "7A6B1007-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "profileChunk": {
+      "uuid": "7A6B1008-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "write-with-response"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "trainingStatus": {
+      "uuid": "7A6B1009-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "liveSignal": {
+      "uuid": "7A6B100A-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "counterReset": {
+      "uuid": "7A6B100B-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    },
+    "audioSpectrum": {
+      "uuid": "7A6B100C-5C29-4B87-9E31-41AC08D2E640",
+      "length": 20,
+      "properties": [
+        "read",
+        "notify"
+      ],
+      "optional": true,
+      "payloadVersion": 1
+    }
+  },
+  "stateFields": [
+    [
+      "version",
+      0,
+      1
+    ],
+    [
+      "flags",
+      1,
+      1
+    ],
+    [
+      "capacity",
+      2,
+      2
+    ],
+    [
+      "remaining",
+      4,
+      2
+    ],
+    [
+      "totalEvents",
+      6,
+      4
+    ],
+    [
+      "sequence",
+      10,
+      4
+    ],
+    [
+      "boot",
+      14,
+      4
+    ],
+    [
+      "battery",
+      18,
+      1
+    ],
+    [
+      "reserved",
+      19,
+      1
+    ]
+  ],
+  "commandFields": [
+    [
+      "version",
+      0,
+      1
+    ],
+    [
+      "opcode",
+      1,
+      1
+    ],
+    [
+      "valueSigned",
+      2,
+      2
+    ],
+    [
+      "requestID",
+      4,
+      4
+    ],
+    [
+      "expectedSequence",
+      8,
+      4
+    ],
+    [
+      "boot",
+      12,
+      4
+    ]
+  ],
+  "ackFields": [
+    [
+      "version",
+      0,
+      1
+    ],
+    [
+      "result",
+      1,
+      1
+    ],
+    [
+      "requestID",
+      2,
+      4
+    ],
+    [
+      "boot",
+      6,
+      4
+    ],
+    [
+      "sequence",
+      10,
+      4
+    ]
+  ],
+  "identityFields": [
+    [
+      "version",
+      0,
+      1
+    ],
+    [
+      "deviceID",
+      1,
+      8
+    ]
+  ],
+  "opcodes": {
+    "reload": 1,
+    "correction": 2,
+    "setCapacity": 3,
+    "resetTotal": 4
+  },
+  "ackResults": {
+    "accepted": 0,
+    "stale": 1,
+    "invalid": 2,
+    "storageFailure": 3,
+    "exhausted": 4
+  },
+  "flags": {
+    "imuReady": 1,
+    "recording": 2,
+    "storageFault": 4,
+    "totalSaturated": 8,
+    "sequenceExhausted": 16,
+    "simulationAvailable": 32
+  },
+  "goldenStateHex": "01212c01f7003500000005000000020000005200",
+  "goldenSafetyHex": "01030a0f64000101000000000100000003000000",
+  "goldenProfileHex": "414d4431010310012a0000000100c8008fc2f53ccdcc4c3e0ad7a33d0000a0408fc2f53c0ad7233c00000040000010410ad7a33d8fc2753cd20400005000784f",
+  "safetyFields": [
+    [
+      "version",
+      0,
+      1
+    ],
+    [
+      "flags",
+      1,
+      1
+    ],
+    [
+      "vbatRailMillivoltsOrFFFF",
+      2,
+      2
+    ],
+    [
+      "dieTemperatureQuarterCOr8000",
+      4,
+      2
+    ],
+    [
+      "usbPresent",
+      6,
+      1
+    ],
+    [
+      "chargePinActiveOrFF",
+      7,
+      1
+    ],
+    [
+      "reason",
+      8,
+      1
+    ],
+    [
+      "reservedZero",
+      9,
+      3
+    ],
+    [
+      "sampleCounter",
+      12,
+      4
+    ],
+    [
+      "boot",
+      16,
+      4
+    ]
+  ],
+  "safetyFlags": {
+    "dieTemperatureValid": 1,
+    "vbatRailValid": 2,
+    "warning": 4,
+    "applicationLocked": 8
+  },
+  "safetyReasons": {
+    "none": 0,
+    "dieHot": 1,
+    "railLow": 2,
+    "railHigh": 3,
+    "dieTemperatureUnavailable": 4,
+    "watchdogReset": 5,
+    "railUnavailable": 6
+  },
+  "resetConfirmationValue": 21075
+}

@@ -1,0 +1,21 @@
+{
+  "board": "Original Seeed XIAO nRF52840 Sense (not Plus)",
+  "bsp": "Seeeduino nRF52 1.1.13",
+  "gpioRunSwitch": false,
+  "applicationOnly": true,
+  "bootloaderIncluded": false,
+  "hexSHA256": "e8d2a9cd0dbee66e450a3bc038beb0d19ddb7f91de345804d2f30ae35f8b62d3",
+  "features": [
+    "two BLE centrals",
+    "IMU feature capture",
+    "phone trained classifier",
+    "dual-slot counter and model persistence",
+    "safety telemetry",
+    "adaptive low-amplitude model threshold",
+    "PDM 16kHz amplitude envelope over BLE",
+    "20-second live-monitor lease",
+    "nonblocking notification FIFO; concurrent IMU and PDM capture"
+  ],
+  "batterySwitch": "battery positive -> existing inline switch -> BAT+; no wiring changes",
+  "charging": "USB hardware controlled; firmware cannot cut charging or measure battery temperature"
+}

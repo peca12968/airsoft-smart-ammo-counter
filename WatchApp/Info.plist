@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Ammo Estimate</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>連接可拆卸 XIAO 震動感測器，同步估計 BB 剩餘數與裝置狀態。</string>
+	<key>WKApplication</key>
+	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>以本機麥克風分析聲音頻譜特徵，估計擊發事件；不保存原始錄音。</string>
+	<key>NSMotionUsageDescription</key>
+	<string>使用本機加速度及動作資料辨識震動事件。</string>
+	<key>WKCompanionAppBundleIdentifier</key>
+	<string>org.local.AirsoftSmartAmmo.phone</string>
+	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<true/>
+</dict>
+</plist>
