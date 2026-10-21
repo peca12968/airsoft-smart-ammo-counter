@@ -898,7 +898,7 @@ private final class WatchAudioWorker:@unchecked Sendable {
     @Published private(set) var watchControl:WatchControlStatus?
     @Published private(set) var watchControlPending=false
     @Published private(set) var watchControlNote="請在手錶開啟 Ammo 雙端"
-    nonisolated static let buildLabel="2026/10/21 20:58"
+    nonisolated static let buildLabel="2026/10/21 21:19"
     private var settingsReady=false
     private var foreground=false
     private var dimmedAudioFrames=0,dimmedRelayAcknowledgements=0
