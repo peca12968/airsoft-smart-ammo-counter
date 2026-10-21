@@ -138,8 +138,18 @@ struct DevicesView: View {
 
 struct LocalWatchRootView:View {
     @EnvironmentObject var store:LocalAmmoStore
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
     var body:some View {
         NavigationStack {
+            if isLuminanceReduced {
+                VStack(spacing:8) {
+                    Text("估計剩餘 BB").font(.caption).foregroundStyle(.secondary)
+                    Text("\(store.remaining)").font(.system(size:64,weight:.semibold,design:.rounded)).monospacedDigit()
+                    Text("/ \(store.ledger.capacity)").foregroundStyle(.secondary)
+                    Text("累計 \(store.total)").font(.headline).monospacedDigit()
+                    Text("上次保存的數值 · 抬腕可操作").font(.caption2).foregroundStyle(.secondary)
+                }.foregroundStyle(.white).padding(.horizontal,8)
+            } else {
             ScrollView {
                 VStack(spacing:12) {
                     Text("\(store.remaining)").font(.system(size:64,weight:.semibold,design:.rounded)).monospacedDigit().foregroundStyle(.mint)
@@ -166,6 +176,7 @@ struct LocalWatchRootView:View {
                     Text("僅在一台啟用感測；保持 App 在前景。重置累計請用手機。").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.horizontal,8)
             }.navigationTitle("本機辨識")
+            }
         }.preferredColorScheme(.dark).tint(.mint)
         .alert("提示",isPresented:Binding(get:{store.message != nil},set:{if !$0 {store.message=nil}})){Button("好"){store.message=nil}}message:{Text(store.message ?? "")}
     }
