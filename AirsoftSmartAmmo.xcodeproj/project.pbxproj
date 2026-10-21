@@ -29,7 +29,19 @@
 		6EF19E8DAC968B0CA07D6FFF = {isa = PBXBuildFile; productRef = CBE26B02C1E8AF574752234F; };
 		8665012665A04A8BEB26B7E7 = {isa = PBXBuildFile; fileRef = CF5FCCA94A87EA853380B84A; };
 		27C69B8A00D70E6FB190210E = {isa = PBXBuildFile; fileRef = E9B3DF83C240073DACA6AA8B; };
+		A8FD94ECB1F740E89C7B2457 /* AmmoWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 8BCD5BC4CDFDF0918087C782 /* AmmoWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+
+/* Begin PBXContainerItemProxy section */
+        9511461CB4424A77A70E4592 = {isa = PBXContainerItemProxy; containerPortal = 98F54143AB4E86B28C3AFEE0; proxyType = 1; remoteGlobalIDString = 90F5035FC0A528732056B2A6; remoteInfo = AmmoWatch; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXCopyFilesBuildPhase section */
+        7B45C5B6D51842889A598958 /* Embed Watch Content */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = "$(CONTENTS_FOLDER_PATH)/Watch"; dstSubfolderSpec = 16; files = (A8FD94ECB1F740E89C7B2457, ); name = "Embed Watch Content"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
+/* Begin PBXTargetDependency section */
+        2107BD98C9D340949A2B97BE = {isa = PBXTargetDependency; target = 90F5035FC0A528732056B2A6; targetProxy = 9511461CB4424A77A70E4592; };
+/* End PBXTargetDependency section */
 
 /* Begin PBXFileReference section */
 		04ECCBA71FEC7665E8798F6D /* WatchApp/WatchStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchApp/WatchStore.swift; sourceTree = SOURCE_ROOT; };
@@ -164,8 +176,8 @@
 		1BA7D66A3098450011C405CA /* AmmoPhone */ = {
             isa = PBXNativeTarget;
             buildConfigurationList = A0E072B559CEE3EC12C9FDF7;
-            buildPhases = (12B1D2E3DE43EB15F1976E4E, 8E9080ED2AC492A6CFAC0990, F8471C150FDA09217244748F,);
-            buildRules = (); dependencies = ();
+            buildPhases = (12B1D2E3DE43EB15F1976E4E, 8E9080ED2AC492A6CFAC0990, F8471C150FDA09217244748F, 7B45C5B6D51842889A598958,);
+            buildRules = (); dependencies = (2107BD98C9D340949A2B97BE,);
             name = AmmoPhone; productName = AmmoPhone;
             packageProductDependencies = (CBE26B02C1E8AF574752234F,);
             productReference = B4462096927A24FA522A0084;

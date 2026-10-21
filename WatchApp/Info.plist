@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Ammo Estimate</string>
+	<string>Ammo 雙端</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>連接可拆卸 XIAO 震動感測器，同步估計 BB 剩餘數與裝置狀態。</string>
 	<key>WKApplication</key>

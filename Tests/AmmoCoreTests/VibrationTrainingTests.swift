@@ -429,6 +429,46 @@ extension VibrationTrainingTests {
         XCTAssertEqual(verifiedHits,0)
     }
 
+    func testRapidSemiAutomaticPeaksRearmAboveNoiseFloorAndKeepOriginalOnsetTime() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector(),hits=0
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        for index in 0..<5 {
+            let onset=0.08+Double(index)*0.2
+            for (offset,amplitude) in [(0.0,index==0 ? 0.006:0.06),(0.02,0.16),(0.05,0.04),(0.10,0.008),(0.11,0.008),(0.12,0.008),(0.13,0.008),(0.14,0.008),(0.15,0.008),(0.16,0.008),(0.17,0.008)] {
+                if detector.update(refinedTone(1250,amplitude),time:onset+offset,model:model) {
+                    hits+=1;XCTAssertEqual(try XCTUnwrap(detector.eventTime),onset,accuracy:0.00001)
+                }
+            }
+        }
+        XCTAssertEqual(hits,5)
+    }
+
+    func testMatchingButQuietSoundCannotCountBelowRecordedPeakReference() throws {
+        let model=try refinedFixture().model;var detector=LocalAcousticDetector()
+        _ = detector.update(refinedTone(250,0.0004),time:0,model:model)
+        _ = detector.update(refinedTone(250,0.0004),time:0.04,model:model)
+        XCTAssertFalse(detector.update(refinedTone(1250,0.0015),time:0.08,model:model))
+        XCTAssertFalse(detector.update(refinedTone(1250,0.0004),time:0.10,model:model))
+        XCTAssertEqual(detector.decision,.belowRecordedLevel)
+    }
+
+    func testPerDeviceLevelReferenceAndLegacyModelsAreCompatible() throws {
+        let model=try refinedFixture().model
+        XCTAssertNotNil(model.referencePeakRMS)
+        let data=try JSONEncoder().encode(model)
+        let restored=try JSONDecoder().decode(RefinedAcousticModel.self,from:data)
+        XCTAssertEqual(restored.referencePeakRMS,model.referencePeakRMS)
+        var old=try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any]);old.removeValue(forKey:"referencePeakRMS")
+        let legacy=try JSONDecoder().decode(RefinedAcousticModel.self,from:JSONSerialization.data(withJSONObject:old))
+        XCTAssertTrue(legacy.valid);XCTAssertNil(legacy.referencePeakRMS)
+        XCTAssertEqual(legacy.minimumEventPeakRMS,legacy.base.onset*2)
+        let louder=RefinedAcousticModel(version:model.version,base:model.base,noisePower:model.noisePower,prototypes:model.prototypes,negatives:model.negatives,minimumScore:model.minimumScore,minimumRise:model.minimumRise,prototypeGroups:model.prototypeGroups,referencePeakRMS:0.3)
+        XCTAssertTrue(louder.valid);XCTAssertGreaterThan(louder.minimumEventPeakRMS,model.minimumEventPeakRMS*5)
+        var json=try XCTUnwrap(JSONSerialization.jsonObject(with:JSONEncoder().encode(louder)) as? [String:Any]);json["referencePeakRMS"] = -1
+        XCTAssertFalse(try JSONDecoder().decode(RefinedAcousticModel.self,from:JSONSerialization.data(withJSONObject:json)).valid)
+    }
+
     func clippedTone(_ hz:Double=1250,_ amplitude:Double=0.4,flags:UInt8=2) throws -> AudioSpectrum {
         let frame=refinedTone(hz,amplitude)
         var clipped=try AudioSpectrum(data:AudioSpectrum.data(sequence:frame.sequence,captureID:frame.captureID,rms:frame.rms,bands:frame.bands,dominantHz:frame.dominantHz,timestamp:frame.timestamp,flags:flags))
