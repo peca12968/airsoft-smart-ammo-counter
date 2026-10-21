@@ -2,6 +2,34 @@ import XCTest
 @testable import AmmoCore
 
 extension VibrationTrainingTests {
+    func testReturnToPhoneAnalysisPreservesWatchHistoryAndValidationDoesNotCount() throws {
+        let (fixture,frames)=try relayFixture()
+        var watch=LocalAmmoLedger(seed:509,capacity:30,remaining:10,editor:"watch")
+        watch.event(origin:"watch")
+        var phone=watch
+        phone.claimSensor(origin:"phone")
+        for validation in [true,false] {
+            let session=WatchAudioStart(model:fixture.model,settings:fixture.settings,validation:validation)
+            var receiver=try XCTUnwrap(WatchAudioReceiver(session:session)),sequence:UInt64=0
+            let before=phone.lifetime
+            for offset in stride(from:0,to:frames.count,by:24) {
+                let batch=WatchAudioBatch(id:session.id,sequence:sequence,frames:Array(frames[offset..<min(offset+24,frames.count)]),finished:offset+24>=frames.count)
+                for _ in 0..<2 {
+                    let result=try receiver.accept(batch)
+                    if !session.validation {for _ in 0..<result.newHits {phone.event(origin:"phone")}}
+                    watch.merge(phone)
+                    phone.merge(watch)
+                }
+                sequence+=1
+            }
+            XCTAssertEqual(phone.lifetime,before+(validation ? 0:5))
+            XCTAssertEqual(watch.total,phone.total)
+            XCTAssertEqual(watch.remaining,phone.remaining)
+            XCTAssertEqual(watch.events["watch"],1)
+            XCTAssertEqual(phone.resetBaseline,0)
+            XCTAssertEqual(watch.sensorOwner,"phone")
+        }
+    }
     func testLostAcknowledgementsDoNotDuplicatePersistedLedgerEvents() throws {
         let (session,frames)=try relayFixture()
         var receiver=try XCTUnwrap(WatchAudioReceiver(session:session))

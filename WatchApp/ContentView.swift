@@ -147,7 +147,7 @@ struct LocalWatchRootView:View {
                     Text("\(store.remaining)").font(.system(size:64,weight:.semibold,design:.rounded)).monospacedDigit()
                     Text("/ \(store.ledger.capacity)").foregroundStyle(.secondary)
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
-                    Text(store.armed ? "本機計數中":(store.listening ? "收音中":"等待手機自動開始")).font(.caption2).foregroundStyle(.secondary)
+                    Text(store.armed ? "收音中 · 手機計數":(store.listening ? "收音中":"等待手機自動開始")).font(.caption2).foregroundStyle(.secondary)
                     if store.isLowAmmo {Text(store.remaining==0 ? "估計已空":"低彈量").font(.caption2).foregroundStyle(.orange)}
                     if let message=store.message {Text(message).font(.caption2).foregroundStyle(.orange)}
                 }.foregroundStyle(.white).padding(.horizontal,8)
@@ -170,7 +170,7 @@ struct LocalWatchRootView:View {
                     Text(store.dualStatus).font(.caption2).foregroundStyle(.secondary)
                     if let message=store.message {Text(message).font(.caption2).foregroundStyle(.orange)}
                     Text("手機開啟、手錶就緒後自動開始；設定與停止請用手機。").font(.caption2).foregroundStyle(.secondary)
-                    Text(store.backgroundRecordingEnabled ? "變暗仍收音 · 手機可鎖定":"請先喚醒手錶").font(.caption2).foregroundStyle(.secondary)
+                    Text(store.backgroundRecordingEnabled ? "變暗仍收音 · 手機需保持 App 前景":"請先喚醒手錶").font(.caption2).foregroundStyle(.secondary)
                     Text("更新 \(LocalAmmoStore.buildLabel)").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.horizontal,8)
             }.navigationTitle("Ammo 雙端")
