@@ -43,9 +43,11 @@ public struct WatchControlStatus: Codable, Sendable {
     public var hasModel: Bool
     public var validationHits: Int
     public var build: String
+    public var canStart: Bool?
     public init(settings: LocalDetectionSettings, phase: String, detail: String, busy: Bool,
-                hasModel: Bool, validationHits: Int, build: String) {
+                hasModel: Bool, validationHits: Int, build: String,canStart:Bool?=nil) {
         self.settings = settings; self.phase = phase; self.detail = detail; self.busy = busy
         self.hasModel = hasModel; self.validationHits = validationHits; self.build = build
+        self.canStart=canStart
     }
 }
