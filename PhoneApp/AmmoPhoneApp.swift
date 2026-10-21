@@ -8,6 +8,7 @@ import SwiftUI
         WindowGroup {
             LocalPhoneRootView()
                 .environmentObject(store)
+                .onAppear {store.setActive(scenePhase == .active)}
                 .onChange(of: scenePhase) { _, phase in store.setActive(phase == .active) }
         }
     }

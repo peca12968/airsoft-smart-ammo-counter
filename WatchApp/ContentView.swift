@@ -157,27 +157,14 @@ struct LocalWatchRootView:View {
                     ProgressView(value:Double(store.remaining),total:Double(store.ledger.capacity)).tint(.mint)
                     Text("累計 \(store.total)").font(.headline).monospacedDigit()
                     Text(store.phase).font(.caption).foregroundStyle(store.armed ? .mint:.orange)
-                    Button(store.listening ? "停止感測":"開始監聽") {if store.listening {store.stop()}else{Task{await store.start()}}}.buttonStyle(.bordered)
-                    Button(store.armed ? "暫停計數":"啟用計數") {store.toggleArmed()}.buttonStyle(.borderedProminent).disabled(!store.listening || store.training)
-                    Button("收錄特徵") {store.train()}.disabled(store.training)
                     Text(store.detail).font(.caption2)
                     Text(store.decisionText).font(.caption2).foregroundStyle(.secondary)
-                    if store.refinedReport != nil {
-                        Button(store.validating ? "驗證 \(store.validationHits)／5":"試敲 5 次"){store.validateFiveTaps()}.disabled(store.training || store.validating)
-                        Button("補收背景聲"){store.collectBackgroundExamples()}.disabled(store.training || store.validating)
-                    }
-                    Text("主峰 \(store.spectrum?.dominantHz ?? 0) Hz").font(.caption)
-                    Text("震動 \(String(format:"%.3fg",store.motionG))").font(.caption)
-                    Picker("觸發條件",selection:$store.triggerMode){Text("聲音頻譜").tag(0);Text("聲音＋震動").tag(1);Text("震動").tag(2)}
-                    Stepper("頻譜相似度 \(Int(store.similarity*100))%",value:$store.similarity,in:0.65...0.98,step:0.01)
-                    Picker("容量",selection:Binding(get:{store.ledger.capacity},set:{store.setCapacity($0)})){ForEach(AmmoCounter.presets,id:\.self){n in Text("\(n) 發").tag(n)}}
-                    Button("重新裝填") {store.reload()}
-                    HStack{Button("−1"){store.correct(-1)};Button("＋1"){store.correct(1)}}.buttonStyle(.bordered)
-                    Text(store.relativeLevelText).font(.caption2).foregroundStyle(.secondary)
                     Text(store.dualStatus).font(.caption2).foregroundStyle(.secondary)
-                    Text("兩台可同時收音；需手機連線對時與入帳。保持 App 在前景。重置累計請用手機。").font(.caption2).foregroundStyle(.secondary)
+                    Text("所有操作請用手機。此手錶負責收音與顯示。").font(.caption2).foregroundStyle(.secondary)
+                    Text("手錶收音 · 手機判斷 \n兩端 App 需在前景").font(.caption2).foregroundStyle(.secondary)
+                    Text("更新 \(LocalAmmoStore.buildLabel)").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.horizontal,8)
-            }.navigationTitle("本機辨識")
+            }.navigationTitle("Ammo 雙端")
             }
         }.preferredColorScheme(.dark).tint(.mint)
         .alert("提示",isPresented:Binding(get:{store.message != nil},set:{if !$0 {store.message=nil}})){Button("好"){store.message=nil}}message:{Text(store.message ?? "")}
